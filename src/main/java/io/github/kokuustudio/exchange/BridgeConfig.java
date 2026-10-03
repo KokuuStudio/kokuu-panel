@@ -30,7 +30,8 @@ public final class BridgeConfig {
     /**
      * 静态单例路径的候选全限定名，按顺序尝试。
      * <p>★ 首选路径其实是 <b>Vault API</b>（见 {@link EconomyHook}），
-     * 这份列表只是回退 —— 覆盖 CMI 新旧包名。接别的经济插件时加一行即可。
+     * 这份列表只是回退 —— 覆盖 CMI 新旧包名（历史兼容）。
+     * 走 Vault 的经济后端无需配置，接其它非 Vault 后端时加一行即可。
      */
     public List<String> economyClassNames = new ArrayList<>(Arrays.asList(
             "com.Zrips.Economy_CMI",

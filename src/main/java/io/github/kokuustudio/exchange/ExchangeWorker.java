@@ -139,7 +139,7 @@ public final class ExchangeWorker {
         return true;
     }
 
-    /** 真正执行发放：切主线程 → 调 CMI → 收集结果 */
+    /** 真正执行发放：切主线程 → 调经济后端 → 收集结果 */
     private ExchangeResult processJob(ExchangeJob job) {
         long t0 = System.currentTimeMillis();
         boolean online = isOnline(job.playerName);
@@ -162,7 +162,7 @@ public final class ExchangeWorker {
         //   latch 每次新建，天然隔离。
         final CountDownLatch latch = new CountDownLatch(1);
 
-        // 切主线程执行 CMI 调用（Bukkit 玩家 API 不是线程安全的）
+        // 切主线程执行经济调用（Bukkit 玩家 API 不是线程安全的）
         try {
             Bukkit.getScheduler().runTask(plugin, () -> {
                 try {

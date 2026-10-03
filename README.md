@@ -15,7 +15,7 @@ Blessing Skin 积分兑换的 **Minecraft 服务端执行器**。
 
 ## 为什么需要它
 
-主流经济插件（CMI 等）**没有 HTTP/REST 接口** —— 发放货币这个动作只能由
+主流经济插件（Vault / EssentialsX 等）**没有 HTTP/REST 接口** —— 发放货币这个动作只能由
 MC 服务端里的 Java 代码执行。所以「直连发放」不是浏览器直连游戏，
 而是靠一个服务端插件把指令执行掉。
 
@@ -37,7 +37,7 @@ MC 服务端里的 Java 代码执行。所以「直连发放」不是浏览器�
 | Minecraft | **1.12.2 ~ 最新**（一个 jar 通吃） |
 | Java 运行时 | 8 / 11 / 17 / 21（编译为 Java 8 字节码） |
 | 服务端类型 | Spigot / Paper / Purpur |
-| 经济插件 | 任何提供 `getInstance()` + `deposit(...)` 的插件（默认已配好 CMI） |
+| 经济插件 | 任何经**Vault API** 接入的经济后端（EssentialsX / CMI 等）。首选 Vault 路径，静态单例仅作兼容回退 |
 
 **关于 Java 8 字节码**：MC 服务器的 Java 版本随版本走（1.12.2 是 Java 8，
 1.18+ 是 Java 17，1.20.5+ 是 Java 21）。字节码兼容是**单向**的 ——
@@ -60,7 +60,7 @@ Java 8 字节码能在所有新运行时上跑，反过来则直接
    ```
    [ExchangeBridge] ExchangeBridge 已启用
    [ExchangeBridge]   队列：queue=bs:exchange:queue  result=bs:exchange:result
-   [ExchangeBridge]   经济插件：net.Zrips.ECO.CMI.CMI_Economy  deposit(...)...
+   [ExchangeBridge]   经济插件：Vault API  depositPlayer(...)...
    [ExchangeBridge] 已连接 Redis 127.0.0.1:6379 db0
    ```
    看到「已连接 Redis」和「经济插件」两行才算装好。
@@ -112,14 +112,16 @@ queue:
 
 ### 接其它经济插件
 
-默认已配好 CMI 的新旧两个包名。要接别的（比如某些服的 EssentialsX Economy），
-在 `economy.class-names` 里加上那个插件的**经济类全限定名**：
+**绝大多数情况不需要做任何配置**：EssentialsX Economy 之类都经 Vault API
+注册，插件启动时会自动绑定（路径 A）。
+
+只有当你的经济后端**没有**实现 Vault 接口时，才需要在这里填它的
+**经济类全限定名**（走静态单例回退路径 B）：
 
 ```yaml
 economy:
   class-names:
     - '你的插件.经济类全限定名'
-    - 'net.Zrips.ECO.CMI.CMI_Economy'   # 多个候选按顺序试，第一个能用的生效
 ```
 
 目标类需要满足：

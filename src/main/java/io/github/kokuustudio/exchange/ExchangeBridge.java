@@ -24,7 +24,7 @@ import java.util.List;
  *
  * <p>为什么用 Redis 队列而不是 HTTP 回调：
  * <ul>
- *   <li>主流经济插件（CMI 等）大多没有 HTTP/REST 接口，发放只能在服务端执行；</li>
+ *   <li>主流经济后端（Vault / EssentialsX 等）大多没有 HTTP/REST 接口，发放只能在服务端执行；</li>
  *   <li>Redis 只监听 127.0.0.1，服务器不必开任何公网端口；</li>
  *   <li>RPOP「取走即消失」天然避免两实例重复消费，不需要额外加锁。</li>
  * </ul>

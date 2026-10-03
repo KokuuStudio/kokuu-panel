@@ -13,7 +13,7 @@ import java.util.UUID;
  *
  * <p>⚠️ 为什么用反射而��直接 compileOnly 依赖经济插件的 API：
  * <ol>
- *   <li>CMI 是商业插件，不在 Maven 中央仓库，构建机上不一定有 jar；</li>
+ *   <li>经济后端是第三方插件，不在 Maven 中央仓库，构建机上不一定有 jar；</li>
  *   <li>服务器可能装了也可能没装（测试服/空服）——
  *       直接 import 会让插件在「没装该插件」的服务器上加载即崩，
  *       连带整个插件不可用。反射可以做到「没装时插件照常加载，只是发放不可用」。</li>
@@ -23,7 +23,7 @@ import java.util.UUID;
  * <pre>
  *   路径 A：Vault API（首选）
  *     Bukkit.getServicesManager().getRegistration(Economy.class).getProvider()
- *     → 拿到 com.Zrips.Economy_CMI 实例（它 extends Vault 的 AbstractEconomy）
+ *     → 拿到经济后端实例（EssentialsX / CMI 等都 extends Vault 的 AbstractEconomy）
  *     → 调 depositPlayer(OfflinePlayer, double) / getBalance(OfflinePlayer)
  *
  *   路径 B：静态单例（回退）
@@ -31,13 +31,13 @@ import java.util.UUID;
  *     → 调 deposit(玩家, 金额)
  * </pre>
  *
- * <p><b>为什么必须有路径 A</b>：CMI 9.8.x 起把经济功能拆到了独立的
- * {@code CMIEInjector} 插件里，类名是 {@code com.Zrips.Economy_CMI}，
- * 它 {@code extends net.milkbowl.vault.economy.AbstractEconomy}，
+ * <p><b>为什么必须有路径 A</b>：现代经济后端（含 EssentialsX Economy，
+ * 以及 CMI 9.8.x 起拆到独立 {@code CMIEInjector} 里的 {@code com.Zrips.Economy_CMI}）
+ * 都是 {@code extends net.milkbowl.vault.economy.AbstractEconomy}，
  * 实例由 <b>Vault 的 ServicesManager</b> 反射创建并持有 ——
- * <b>没有 {@code getInstance()} 静态方法</b>，只有 {@code Economy_CMI(Plugin)} 构造器。
- * 所以只认静态单例的实现对现代 CMI 完全失效。
- * Vault 是几乎所有经济插件（Cmi/EssentialsX/…）的通用适配层，走它最稳。
+ * <b>没有 {@code getInstance()} 静态方法</b>，只有带 Plugin 参数的构造器。
+ * 所以只认静态单例的实现对这些后端完全失效。
+ * Vault 是几乎所有经济后端的通用适配层，走它最稳。
  *
  * <p>★ 两条路径都失败时，{@link #available()} 为 false，
  * 插件仍正常加载，只是发放会失败并退款（不会崩服）。
@@ -52,10 +52,10 @@ public final class EconomyHook {
 
     /**
      * 静态单例路径的候选类名（新→旧）。
-     * <p>仅作回退；现代 CMI 走 Vault 路径，详见类注释。
+     * <p>仅作回退。走 Vault 的后端（EssentialsX / 现代 CMI 等）根本用不到这里，详见类注释。
      */
     public static final String[] ECON_CLASSES = {
-            "com.Zrips.Economy_CMI",           // CMI 9.8.x（CMIEInjector 提供，走 Vault）
+            "com.Zrips.Economy_CMI",           // 历史兼容：CMI 9.8.x（走 Vault，此项仅作兜底）
             "net.Zrips.ECO.CMI.CMI_Economy",   // 早期 CMI ECO
     };
 

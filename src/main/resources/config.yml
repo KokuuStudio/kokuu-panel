@@ -28,14 +28,14 @@ queue:
 # ────────────────────────────────────────────────────────
 #  插件通过反射调用经济插件发放货币，不需要编译期依赖。
 #  绑定优先级：Vault API → class-names 里的静态单例。
-#  ★ 首选路径是 **Vault API**（绝大多数经济插件都走它），
-#    这份列表只是回退 —— 你的服务器装了 Vault + 经济插件就通常不用管。
+#  ★ 首选路径是 **Vault API**（EssentialsX Economy 等绝大多数后端都走它），
+#    这份列表只是回退 —— 你的服务器装了 Vault + 经济后端就通常不用管。
 #
 #  什么情况下才需要动 class-names：
-#    你的经济插件**不走 Vault**，且暴露了「静态 getInstance() + deposit(玩家, 金额)」。
+#    你的经济后端**不走 Vault**，且暴露了「静态 getInstance() + deposit(玩家, 金额)」。
 #
-#  CMI 9.8.x 的经济在独立的 CMIEInjector 插件里（类名 com.Zrips.Economy_CMI），
-#  它继承 Vault 的 AbstractEconomy、没有 getInstance() —— 靠 Vault 路径接上。
+#  ⚠️ 下面三项是**历史兼容候选**，为仍在用 CMI 的老服保留。
+#     本站现在不用 CMI，走 Vault 即可，这几行只在纯 CMI 老服上才会被命中。
 economy:
   class-names:
     - 'com.Zrips.Economy_CMI'           # CMI 9.8.x（CMIEInjector 提供）

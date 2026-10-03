@@ -59,7 +59,8 @@
         spigot 仓库又连不上。所以只能编译新版 API，
         「不误用 1.13+ 才有的 API」这一责任由 ops/compat_check.js 静态把关。
 
-      经济插件（如 CMI）是商业插件，不在 Maven 仓库里 → 用反射调用，不声明依赖。
+      经济后端（EssentialsX Economy / 原 CMI）都是第三方插件，不在 Maven 中央仓库里
+      → 用反射调用，不声明依赖。
     -->
     <repository>
       <id>papermc</id>

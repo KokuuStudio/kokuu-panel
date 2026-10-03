@@ -19,7 +19,7 @@ public final class ExchangeResult {
     public final String reason;
     public final String playerName;
     public final int units;
-    /** 玩家当前是否在线（离线时 CMI 仍可发放，取决于 CMI 配置） */
+    /** 玩家当前是否在线（离线时仍可发放，取决于经济后端配置） */
     public final boolean playerOnline;
     /** 发放耗时（毫秒），用于排查卡顿 */
     public final long elapsedMs;
