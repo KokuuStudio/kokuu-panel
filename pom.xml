@@ -1,0 +1,229 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ExchangeBridge —— Blessing Skin 积分兑换的 MC 端执行器
+
+  构建：mvn clean package  →  target/exchange-bridge-1.0.0.jar
+  依赖：jedis（Redis 客户端）打包进 jar，服务器无需另装任何库
+
+  ⚠️ 国内网络：settings.xml 里已配华为云镜像，否则拉 Maven 中央仓库会卡。
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>io.github.kokuustudio</groupId>
+  <artifactId>exchange-bridge</artifactId>
+  <version>1.0.0</version>
+  <packaging>jar</packaging>
+  <name>ExchangeBridge</name>
+  <description>Blessing Skin 积分兑换的 MC 端执行器（消费 Redis 队列并通过经济插件发放游戏内货币）</description>
+
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+    <!--
+      ⚠️⚠️ 编译目标必须是 Java 8，这是「一个 jar 通吃 1.12.2 ~ 最新」的前提。
+
+      MC 服务器的 Java 版本随版本走，插件必须同时能在这些运行时上加载：
+        1.12.2  → Java 8
+        1.16.5  → Java 8~11
+        1.18+   → Java 17
+        1.20.5+ → Java 21
+
+      规则是**单向**的：Java 8 字节码能在 Java 8/11/17/21 上跑（向后兼容），
+      反过来 Java 17 字节码在 Java 8 上直接 UnsupportedClassVersionError。
+      所以哪怕构建机装的是 JDK 17，也必须压到 8。
+
+      用 release 而不是 source/target：release 会**同时**限制语言特性与 JDK API，
+      防止误用 Java 9+ 才有的方法（比如 List.of()、String.repeat()）——
+      那些在编译期能过，运行时在 1.12.2 的 Java 8 上会 NoSuchMethodError。
+    -->
+    <maven.compiler.release>8</maven.compiler.release>
+
+    <jedis.version>5.1.0</jedis.version>
+    <gson.version>2.10.1</gson.version>
+  </properties>
+
+  <repositories>
+    <!--
+      ⚠️ 为什么用 paper-api 而不是 spigot-api（实测踩过）：
+        1) CodeMC 仓库（repo.codemc.io）**没有** org.spigotmc:spigot-api，
+           写 spigot-api 会直接构建失败：
+           "Could not find artifact org.spigotmc:spigot-api:jar:1.20.4-R0.1-SNAPSHOT"
+        2) hub.spigotmc.org 在部分网络环境下连不上（实测 curl 直接超时）
+        3) paper-api 是 Spigot API 的**超集**，本插件只用到 Bukkit 基础 API
+
+      ⚠️ 为什么不能用 1.12.2 的 API 编译（那样能结构性保证兼容）：
+        实测 PaperMC 仓库**没有** paper-api:1.12.2-R0.1-SNAPSHOT（HTTP 404），
+        spigot 仓库又连不上。所以只能编译新版 API，
+        「不误用 1.13+ 才有的 API」这一责任由 ops/compat_check.js 静态把关。
+
+      经济插件（如 CMI）是商业插件，不在 Maven 仓库里 → 用反射调用，不声明依赖。
+    -->
+    <repository>
+      <id>papermc</id>
+      <url>https://repo.papermc.io/repository/maven-public/</url>
+    </repository>
+  </repositories>
+
+  <dependencies>
+    <!-- Bukkit/Paper API：服务端自带，只编译不进 jar -->
+    <dependency>
+      <groupId>io.papermc.paper</groupId>
+      <artifactId>paper-api</artifactId>
+      <version>1.20.4-R0.1-SNAPSHOT</version>
+      <scope>provided</scope>
+      <exclusions>
+        <!--
+          ⚠️ 必须排除 paper-api 拖进来的 gson / slf4j：
+          它带的是 paper 自己的版本，我们要在下面显式声明并 shade 自己那份。
+          不排除的话 shade 可能同时塞两份，出现「两个 com.google.gson」，
+          运行时可能加载到不含我们所需方法的那份。
+        -->
+        <exclusion>
+          <groupId>com.google.code.gson</groupId>
+          <artifactId>gson</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.slf4j</groupId>
+          <artifactId>slf4j-api</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <dependency>
+      <groupId>redis.clients</groupId>
+      <artifactId>jedis</artifactId>
+      <version>${jedis.version}</version>
+      <exclusions>
+        <exclusion>
+          <groupId>org.slf4j</groupId>
+          <artifactId>slf4j-api</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.json</groupId>
+          <artifactId>json</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-pool2</artifactId>
+      <version>2.12.0</version>
+    </dependency>
+
+    <!-- JSON 解析：只用到 JsonObject/JsonParser，够用且无额外传递依赖 -->
+    <dependency>
+      <groupId>com.google.code.gson</groupId>
+      <artifactId>gson</artifactId>
+      <version>${gson.version}</version>
+    </dependency>
+
+    <!--
+      ⚠️ slf4j-api 必须显式声明并 shade 进去（实测踩过）：
+      Jedis 5.x 内部用 slf4j 打日志，但 **Minecraft 服务端不提供 slf4j**。
+      不打包的话，只要 Jedis 打了日志就会
+      NoClassDefFoundError: org/slf4j/LoggerFactory —— 而这通常在
+      「第一次连 Redis 失败」时才炸，症状极具迷惑性（看起来像配置错了）。
+
+      带上 slf4j-nop：不给最终用户刷一屏 Jedis 的 DEBUG 日志，
+      我们自己的日志走 Bukkit 的 getLogger()，格式统一。
+    -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <version>2.0.9</version>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-nop</artifactId>
+      <version>2.0.9</version>
+      <scope>runtime</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>${project.artifactId}-${project.version}</finalName>
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+        <filtering>true</filtering>
+      </resource>
+    </resources>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.11.0</version>
+        <configuration>
+          <release>${maven.compiler.release}</release>
+        </configuration>
+      </plugin>
+
+      <!-- 把运行时依赖打进 jar，服务器不需要额外装任何库 -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>3.5.0</version>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals><goal>shade</goal></goals>
+            <configuration>
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+              <artifactSet>
+                <includes>
+                  <include>redis.clients:jedis</include>
+                  <include>org.apache.commons:commons-pool2</include>
+                  <include>com.google.code.gson:gson</include>
+                  <include>org.slf4j:slf4j-api</include>
+                  <include>org.slf4j:slf4j-nop</include>
+                </includes>
+              </artifactSet>
+
+              <!--
+                ⚠️ relocate 是**必须**的，不是优化：
+                服务器上装了其他也用 Jedis/Gson 的插件时，相同全限定名会争抢同一份类。
+                改名成 xxx.lib.* 后，本插件用的永远是 jar 内自己那份。
+              -->
+              <relocations>
+                <relocation>
+                  <pattern>redis.clients.jedis</pattern>
+                  <shadedPattern>io.github.kokuustudio.exchange.lib.jedis</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>org.apache.commons.pool2</pattern>
+                  <shadedPattern>io.github.kokuustudio.exchange.lib.commons.pool2</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>com.google.gson</pattern>
+                  <shadedPattern>io.github.kokuustudio.exchange.lib.gson</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>org.slf4j</pattern>
+                  <shadedPattern>io.github.kokuustudio.exchange.lib.slf4j</shadedPattern>
+                </relocation>
+              </relocations>
+
+              <!-- 服务端自带的签名文件不能打进 jar，会导致 jar 校验失败 -->
+              <filters>
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                    <exclude>META-INF/maven/**</exclude>
+                    <exclude>module-info.class</exclude>
+                  </excludes>
+                </filter>
+              </filters>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

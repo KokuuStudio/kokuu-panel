@@ -1,0 +1,68 @@
+# ══════════════════════════════════════════════════════════════
+#  ExchangeBridge · Blessing Skin 积分兑换 MC 端配置
+# ══════════════════════════════════════════════════════════════
+#
+#  ⚠️ 队列键名必须与皮肤站管理页「兑换配置」里保存的完全一致。
+#     两边不一致的后果：订单写进 A 队列、MC 从 B 队列取 —— 订单「凭空消失」，
+#     玩家积分已扣但订单永远停在「发放中」，直到超期退款。
+
+redis:
+  # 皮肤站服务器地址。
+  # Redis 通常只监听 127.0.0.1，所以 MC 机和皮肤站必须同机；
+  # 若分机部署，请走 SSH 隧道/内网 —— **不要**把 Redis 直接暴露到公网。
+  host: 127.0.0.1
+  port: 6379
+  # Redis 的 requirepass。两边填一致即可。
+  # 首次部署不填也能连（若 Redis 未设密码），但强烈建议给 Redis 设密码。
+  password: ''
+  database: 0
+  # 连接/读超时（毫秒）。Redis 在本机，超过 3 秒基本就是出问题了。
+  timeout: 3000
+
+queue:
+  key: 'bs:exchange:queue'
+  result-key: 'bs:exchange:result'
+
+# ────────────────────────────────────────────────────────
+#  经济插件适配
+# ────────────────────────────────────────────────────────
+#  插件通过反射调用经济插件发放货币，不需要编译期依赖。
+#  绑定优先级：Vault API → class-names 里的静态单例。
+#  ★ 首选路径是 **Vault API**（绝大多数经济插件都走它），
+#    这份列表只是回退 —— 你的服务器装了 Vault + 经济插件就通常不用管。
+#
+#  什么情况下才需要动 class-names：
+#    你的经济插件**不走 Vault**，且暴露了「静态 getInstance() + deposit(玩家, 金额)」。
+#
+#  CMI 9.8.x 的经济在独立的 CMIEInjector 插件里（类名 com.Zrips.Economy_CMI），
+#  它继承 Vault 的 AbstractEconomy、没有 getInstance() —— 靠 Vault 路径接上。
+economy:
+  class-names:
+    - 'com.Zrips.Economy_CMI'           # CMI 9.8.x（CMIEInjector 提供）
+    - 'net.Zrips.ECO.CMI.CMI_Economy'   # 早期 CMI ECO
+    - 'net.Zrips.CMI.CMI_Economy'       # CMI 旧版
+
+worker:
+  # 两次轮询之间的间隔（毫秒）。
+  # 越小玩家等待越短，但空转时越费 CPU。1000ms 是个平衡点：
+  # 玩家点完兑换刷新一次页面（约 2 秒）通常就能看到结果。
+  poll-interval: 1000
+  # BRPOP 的阻塞超时（秒）。队列空时最多阻塞这么久就返回，
+  # 让线程能醒来做重连检查。不要大于 poll-interval 的秒数，
+  # 否则关闭插件时等不到线程退出。
+  block-timeout: 2
+  # 单次唤醒最多处理几条。积压时避免一次卡主线程太久。
+  batch-size: 8
+  # 单笔发放等待主线程的最长时间（毫秒）。
+  # 超时按失败回传，玩家积分会立即退回 —— 宁可退款也不让订单卡着。
+  deposit-timeout: 5000
+  # Redis 断开后多久重试一次。
+  reconnect-delay: 5000
+  # 「已处理订单号」在内存里保留多久，用于防重复发放。
+  # 必须 >= 皮肤站的 order_ttl（默认 86400秒 = 24h），
+  # 否则重启后旧订单可能被重新处理一遍。
+  processed-ttl: 86400000
+
+# 打开后会把每条队列消息的原始 JSON 打到控制台。
+# 排查「订单没到账」时很有用，正常运行别开（会刷屏）。
+debug: false
