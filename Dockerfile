@@ -36,9 +36,21 @@ RUN cd web && npm run build
 FROM node:22-alpine AS runtime
 WORKDIR /app/server
 
-# tini 负责转发信号与回收僵尸进程 —— 没有它，Ctrl+C / docker stop
-# 收不到 SIGTERM，进程被强杀，正在写的账本流水会丢半条。
-RUN apk add --no-cache tini
+# ★ tini 负责转发信号与回收僵尸进程 —— 没有它，Ctrl+C / docker stop
+#   收不到 SIGTERM，进程被强杀，正在写的账本流水会丢半条。
+#
+# ★ 数据目录必须在这里预建并授权，不能只靠运行时的 mkdir。
+#   账本落在 $DATA_DIR（默认 /data，compose 与文档都用这个路径），
+#   而 / 的属主是 root —— 以 USER node（uid 1000）运行时
+#   mkdir /data 会直接 EACCES 抛异常，进程启动即崩。
+#   症状是「容器起来了但 /api/ping 永远无响应」：
+#   docker ps 显示 Up，docker logs 里只有一条权限错误 ——
+#   很容易误判成端口或健康检查的问题。
+#   node 用户已存在（node:alpine 自带），这里只需 chown。
+RUN apk add --no-cache tini \
+ && mkdir -p /data \
+ && chown -R node:node /data
+VOLUME ["/data"]
 
 # 生产依赖单独一层：改业务代码时这一层命中缓存，不用重装依赖
 COPY --from=deps /app/server/node_modules ./node_modules

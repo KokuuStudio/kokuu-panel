@@ -26,8 +26,14 @@ delete process.env.HTTPS_PROXY;
 delete process.env.http_proxy;
 delete process.env.https_proxy;
 
+/**
+ * ★ 与 reflowtest 同一处改动：请求失败不 reject，而是返回哨兵值。
+ *   这里更必要 —— apitest 大量用 Promise.all 并发发请求，
+ *   reject 会让整批一起炸掉，输出里一条断言都看不到，
+ *   只剩一句 triggerUncaughtException。
+ */
 function raw(method, path, body, token = T) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const payload = body === undefined ? null : Buffer.from(JSON.stringify(body));
     const req = http.request({
       host: '127.0.0.1', port: new URL(BASE).port, path: '/api' + path,
@@ -45,8 +51,11 @@ function raw(method, path, body, token = T) {
         resolve({ code: res.statusCode, j });
       });
     });
-    req.on('error', reject);
-    req.on('timeout', () => req.destroy(new Error('请求超时')));
+    req.on('error', (e) => resolve({ code: 0, j: { error: `请求失败：${e.message}` } }));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({ code: 0, j: { error: '请求超时（10s）—— 后端可能已崩溃或无响应' } });
+    });
     if (payload) req.write(payload);
     req.end();
   });
