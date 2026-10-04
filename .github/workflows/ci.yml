@@ -77,9 +77,30 @@ jobs:
 
           node src/apitest.mjs http://127.0.0.1:8799 testtoken123 2>&1 | tee ../api-test.out
 
+      - name: 接口测试失败项（annotation）
+        if: failure()
+        working-directory: server
+        run: |
+          if grep -q '✗' ../api-test.out; then
+            grep '✗' ../api-test.out | head -20 | while IFS= read -r line; do
+              echo "::error title=接口测试::${line}"
+            done
+          else
+            echo "::error title=接口测试::无失败断言但退出码非 0 —— 测试脚本自身异常。输出尾部："
+            tail -20 ../api-test.out | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+          fi
+
       # ★ 两个测试拆成两步：合在一起时只能看到「起后端」红了，
       #   不知道是 apitest 挂了还是 reflowtest 挂了。
       #   拆开后结论直接体现在 step 名字上。
+      #
+      # ★ 把失败断言变成 GitHub annotation：
+      #   actions logs 接口要仓库 admin 权限，没有权限的人看到
+      #   「CI 红了」却**读不到任何失败原因** —— 只能反复本地猜环境差异。
+      #   而 annotation 走 check-runs 的公开接口，任何有读权限的人
+      #   （包括 CI 排查用的自动化）都能直接拿到失败项原文。
       - name: 回流测试
         working-directory: server
         run: |
@@ -93,6 +114,27 @@ jobs:
             cat ../reflow-test.out
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 回流测试失败项（annotation）
+        if: failure()
+        working-directory: server
+        run: |
+          # 只取失败行：全量输出进 annotation 会超长度上限被截断，
+          # 而真正有价值的就是那几行 ✗。
+          if grep -q '✗' ../reflow-test.out; then
+            echo "::group::回流测试失败项"
+            grep '✗' ../reflow-test.out | head -20 | while IFS= read -r line; do
+              echo "::error title=回流测试::${line}"
+            done
+            echo "::endgroup::"
+          else
+            # 没有 ✗ 却失败 = 测试脚本自己崩了（异常抛出/进程被杀），
+            # 这时输出尾部才是根因所在。
+            echo "::error title=回流测试::无失败断言但退出码非 0 —— 测试脚本自身异常。输出尾部："
+            tail -20 ../reflow-test.out | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+          fi
 
       - name: 上传诊断信息（失败排查用）
         if: always()
@@ -209,6 +251,23 @@ jobs:
           docker buildx build --progress=plain -t kokuu-credit-admin:ci . \
             > build-plain.log 2>&1 || true
           tail -100 build-plain.log
+
+      # ★ 同样把根因做成 annotation：
+      #   build-push-action 默认只报 "exit code: 1"，
+      #   而 npm 装依赖失败时真正有用的是最后那几行
+      #   （ENOENT / 404 / unsupported platform）。
+      #   只取错误行，避免整份日志把 annotation 撑爆。
+      - name: 构建失败根因（annotation）
+        if: failure()
+        run: |
+          if [ -s build-plain.log ]; then
+            grep -nE 'ERROR|error|ERR!|not found|404|ENOENT|Unsupported|failed' \
+              build-plain.log | tail -25 | while IFS= read -r line; do
+              echo "::error title=镜像构建::${line}"
+            done
+          else
+            echo "::error title=镜像构建::构建失败且未产出 build-plain.log（见 buildx action 输出）"
+          fi
 
       - name: 上传构建日志
         if: failure()
