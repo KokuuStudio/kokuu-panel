@@ -47,9 +47,13 @@ jobs:
           REDIS_HOST: 127.0.0.1
           REDIS_PORT: 6379
         run: |
-          # ★ 日志落文件而不是只进 stdout：后端是后台进程，
-          #   失败时 stdout 早就被后续输出冲掉了，只留文件才能 dump。
-          #   第一版失败就是因为看不到后端日志，排查只能靠猜。
+          # ★ set -o pipefail 必须有：下面用 `| tee` 保存输出，
+          #   没有它时管道的退出码取自 tee（永远 0），
+          #   测试挂了这一 step 也会显示绿色 —— 假绿比红更糟。
+          set -o pipefail
+
+          # 日志落文件而不是只进 stdout：后端是后台进程，
+          # 失败时 stdout 早就被后续输出冲掉了，只留文件才能 dump。
           node src/index.js > ../ci-server.log 2>&1 &
           echo $! > ../ci-server.pid
 
@@ -71,22 +75,33 @@ jobs:
           fi
           curl -s http://127.0.0.1:8799/api/ping; echo
 
-          node src/apitest.mjs   http://127.0.0.1:8799 testtoken123
+          node src/apitest.mjs http://127.0.0.1:8799 testtoken123 2>&1 | tee ../api-test.out
 
       # ★ 两个测试拆成两步：合在一起时只能看到「起后端」红了，
       #   不知道是 apitest 挂了还是 reflowtest 挂了。
       #   拆开后结论直接体现在 step 名字上。
       - name: 回流测试
         working-directory: server
-        run: node src/reflowtest.mjs http://127.0.0.1:8799 testtoken123
+        run: |
+          set -o pipefail
+          node src/reflowtest.mjs http://127.0.0.1:8799 testtoken123 2>&1 | tee ../reflow-test.out
+          # ★ 把完整输出写进 run summary —— artifact 要下载才能看，
+          #   而 summary 直接显示在 GitHub 网页上，打开就能读。
+          {
+            echo '## 回流测试输出'
+            echo '```'
+            cat ../reflow-test.out
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: 上传后端日志（失败排查用）
+      - name: 上传诊断信息（失败排查用）
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-server-log
+          name: test-diagnostics
           path: |
             ci-server.log
+            reflow-test.out
             server/data-test/
           retention-days: 7
           if-no-files-found: ignore
