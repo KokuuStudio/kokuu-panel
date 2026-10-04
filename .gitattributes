@@ -1,0 +1,28 @@
+# 统一换行符。
+#
+# 没有这个文件时，Windows 上 core.autocrlf=true（默认装 Git 时勾的就是它）
+# 会在检出时把 LF 换成 CRLF，提交时再换回来 —— 于是同一份文件在不同机器上
+# 的 diff 表现为「整个文件被重写」，多人协作时冲突几乎无法合并。
+# 本仓库第一次推送时就已经出现了这个警告。
+#
+# 全仓库统一 LF；下面再为确实需要 CRLF 的格式单独豁免。
+* text=auto eol=lf
+
+# Windows 批处理必须 CRLF（cmd.exe 对 LF 的容忍度不可靠），
+# 而本项目的部署脚本天然是 .bat，所以提前留好规则。
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制：明确标记，避免 Git 试图做换行转换或生成文本 diff。
+*.jar binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.sqlite binary
+*.sqlite-wal binary
+*.sqlite-shm binary
