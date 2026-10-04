@@ -128,7 +128,13 @@ export const config = {
    * 「两个真相源」。要变成第二个账本必须是**有意为之**，
    * 不能是默认行为。详见 docs/ECOSYSTEM.md。
    */
-  ledgerMode: env('KP_LEDGER_MODE', 'external') as 'external' | 'standalone',
+  ledgerMode: ((): 'skin' | 'standalone' => {
+    const raw = env('KP_LEDGER_MODE', 'skin').trim().toLowerCase();
+    // 旧值是 `external`，语义就是「账本在平台之外」—— 现在叫 `skin` 更准确
+    // （它明确指向皮肤站的那个账本）。保留旧值以免已部署的配置静默改变行为。
+    if (raw === 'standalone') return 'standalone';
+    return 'skin';
+  })(),
 
   /**
    * 皮肤站（Blessing Skin）与 kokuu-credit 的 OAuth2。
@@ -153,6 +159,18 @@ export const config = {
     minPermission: envInt('KP_OAUTH_MIN_PERMISSION', 2),
     /** `permission >= 此值` 映射为 owner（可管平台账号），默认 3 = 超管。 */
     ownerPermission: envInt('KP_OAUTH_OWNER_PERMISSION', 3),
+
+    /**
+     * 账本接口的共享密钥（HMAC-SHA256）。
+     *
+     * 皮肤站那边由 `kokuu-credit` 保存同一个值（它已有的 `secret` 配置项）。
+     * 留空 = 账本接口未启用，`/economy/status` 会如实说明原因 ——
+     * 而不是让经济页面看起来是坏的。
+     *
+     * 为什么不用 OAuth 的 clientSecret：两者用途不同（一个是登录换 token，
+     * 一个是服务端调账本），共用一个密钥会让轮换其中一个时意外打断另一个。
+     */
+    ledgerSecret: env('KP_SKIN_LEDGER_SECRET', ''),
   },
 
   logLevel: env('KP_LOG_LEVEL', 'info'),
@@ -164,6 +182,12 @@ export function isOAuthConfigured(): boolean {
   return Boolean(url && clientId && clientSecret && redirectUri);
 }
 
+/**
+ * 配置的类型。`config` 本身就是唯一来源，这里只是给它一个名字 ——
+ * 免得每个要接配置的模块都写一遍 `typeof config`。
+ */
+export type Config = typeof config;
+
 export function describeConfig(): string {
   return [
     `监听     ${config.host}:${config.port}`,
@@ -171,7 +195,7 @@ export function describeConfig(): string {
     `数据目录 ${config.dataDir}`,
     `数据库   ${config.dbFile}`,
     `前端产物 ${config.webDist}`,
-    `积分账本 ${config.ledgerMode === 'external' ? '外部（皮肤站 / kokuu-credit）' : '平台自带（standalone）'}`,
+    `积分账本 ${config.ledgerMode === 'standalone' ? '平台自带（standalone）' : '皮肤站 users.score（skin）'}`,
     `后台登录 ${isOAuthConfigured() ? `皮肤站 OAuth2（${config.skin.url}）` : '本地账号（未配置 OAuth2）'}`,
   ].join('\n         ');
 }

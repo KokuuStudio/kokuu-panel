@@ -1265,6 +1265,22 @@ export class Store {
     });
   }
 
+  /**
+   * 按皮肤站 uid 反查角色。
+   *
+   * 给 `skin` 账本用：皮肤站的 `credit_ledger` 按 `uid` 记流水，
+   * 而平台面向账本的键是 MC UUID，需要这个方向才能把站点流水显示成玩家。
+   *
+   * 同一个 uid 理论上只对应一个角色（注册时绑定），但 `charactersStatus()`
+   * 会把「一个 uid 对多个角色」当成异常报出来，所以这里按最近活跃取一条，
+   * 而不是假设唯一 —— 数据脏了也不该让查询抛异常。
+   */
+  findCharacterByUid(bsUid: number): CharacterRow | undefined {
+    return this.db
+      .prepare('SELECT * FROM characters WHERE bs_uid = ? ORDER BY last_seen_at DESC LIMIT 1')
+      .get(bsUid) as unknown as CharacterRow | undefined;
+  }
+
   findCharacterByUuid(uuid: string): CharacterRow | undefined {
     const direct = this.db
       .prepare('SELECT * FROM characters WHERE uuid = ?')

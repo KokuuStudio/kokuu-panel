@@ -320,23 +320,40 @@ export interface EconomyAccount {
 /**
  * `GET /economy/status` —— 经济模块的现状自述。
  *
- * 这个接口永远 200，用它决定页面怎么渲染，**不要**靠「哪个请求失败了」去猜：
- * 默认部署（`ledgerMode: 'external'`）下平台不持有积分账本，
- * 所有读账本的接口都会 501 —— 那是设计决定，不是故障。
+ * 这个接口**永远 200**，用它决定页面怎么渲染，不要靠「哪个请求失败了」去猜。
+ *
+ * ⚠️ 这是**本地声明的类型**，TypeScript 无法校验它和服务端实际返回是否一致。
+ * 改了服务端 `/economy/status` 的形状就必须同步改这里 ——
+ * 否则字段成了 `undefined`，界面会静默地渲染成错的（例如把可用的账本
+ * 判成不可用、整块藏起来），而且编译期一点提示都没有。
  */
 export interface EconomyStatus {
   ledger: {
-    mode: 'external' | 'standalone';
-    /** 平台是否真的持有积分账本。false 时账户/流水/配置界面应当隐藏。 */
-    owned: boolean;
+    /** 账本后端：`skin` = 皮肤站的 users.score；`standalone` = 平台自带。 */
+    backend: 'skin' | 'standalone';
+    /**
+     * 后端现在可用吗。
+     *
+     * `false` 时 `reason` 是**一句能直接显示给管理员看的话**：说清缺什么、要去配什么。
+     */
+    available: boolean;
+    reason: string | null;
+    /** 后端支持哪些操作。不支持的要隐藏入口，而不是让它点了报错。 */
+    capabilities: {
+      listAccounts: boolean;
+      readAccount: boolean;
+      adjust: boolean;
+      listLedger: boolean;
+      stats: boolean;
+      /** 兑换比例与限额。skin 模式下归皮肤站管，平台改不了。 */
+      config: boolean;
+    };
     title: string;
     detail: string;
-    /** 想启用平台自带账本要设的环境变量；already owned 时为 null。 */
-    howToEnable: string | null;
     docs: string;
   };
   gameCurrency: {
-    /** 游戏内货币（Vault）通道。与账本模式无关，始终可用。 */
+    /** 游戏内货币（Vault）通道。与账本后端无关，始终可用。 */
     available: boolean;
     note: string;
   };

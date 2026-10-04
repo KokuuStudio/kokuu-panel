@@ -46,9 +46,14 @@ import { execFileSync } from 'node:child_process';
 import { config } from '../apps/server/src/config.ts';
 import { Store } from '../apps/server/src/store/index.ts';
 
-/** 在皮肤站机器上执行的查询。列名与顺序即导入格式。 */
+/**
+ * 在皮肤站机器上执行的查询。列名与顺序即导入格式。
+ *
+ * 列都显式起别名：`mysql -B`（batch）会拿**第一个 SELECT 的列名**当表头打印，
+ * 所以起了别名就等于自带表头，不需要再 UNION 一行字面表头。
+ */
 const EXPORT_SQL = [
-  'SELECT p.pid, p.uid, p.name, COALESCE(u.uuid, \'\') AS uuid',
+  'SELECT p.pid AS pid, p.uid AS uid, p.name AS name, COALESCE(u.uuid, \'\') AS uuid',
   '  FROM players p',
   '  LEFT JOIN uuid u ON u.name = p.name',
   ' ORDER BY p.pid;',
@@ -95,13 +100,9 @@ if (flag('--print-sql')) {
   console.log('');
   console.log(`mysql -u<用户> -p <库名> -N -B -e "${EXPORT_SQL.replace(/\n/g, ' ')}" > characters.tsv`);
   console.log('');
-  console.log('# 或者带表头（推荐，列名自解释）：');
+  console.log('# 加 -B 就会打印列名当表头（列已起别名，表头直接可用）：');
   console.log('');
-  console.log(
-    `mysql -u<用户> -p <库名> -B -e "SELECT 'pid','uid','name','uuid' UNION ALL ` +
-      `SELECT p.pid, p.uid, p.name, COALESCE(u.uuid,'') FROM players p ` +
-      `LEFT JOIN uuid u ON u.name = p.name ORDER BY p.pid" > characters.tsv`,
-  );
+  console.log(`mysql -u<用户> -p <库名> -B -e "${EXPORT_SQL.replace(/\n/g, ' ').replace(/;$/, '')}" > characters.tsv`);
   console.log('');
   console.log('# 拿到 characters.tsv 后，在本平台这边执行：');
   console.log('');
@@ -193,11 +194,37 @@ function parseRecords(text) {
       pid: Number.parseInt(cells[iPid] ?? '', 10),
       uid: iUid >= 0 ? Number.parseInt(cells[iUid] ?? '', 10) : NaN,
       name: cells[iName] ?? '',
-      uuid: iUuid >= 0 ? (cells[iUuid] ?? '') : '',
+      uuid: normalizeUuid(iUuid >= 0 ? (cells[iUuid] ?? '') : ''),
       line: lineNo + (hasHeader ? 2 : 1),
     };
     return record;
   });
+}
+
+/**
+ * 把 UUID 统一成**带连字符的小写**标准形式。
+ *
+ * 为什么必须做：Blessing Skin 的 `uuid` 表存的是**无连字符**的 32 位十六进制
+ * （`fbde4894fff23230a3ca4be322076961`），而平台从 Agent 拿到的 MC UUID
+ * 是标准带连字符形式。两者字符串不相等，于是
+ * `findCharacterByUuid()` 的精确匹配永远查不到 ——
+ * 症状是「skin 账本里所有账号都映射不到 MC 角色」，而这不会报错，只会静默地
+ * 退化成 uid:<n> 占位符。
+ *
+ * 已经在库里的旧数据需要用同一个文件重导一次才会被规范化。
+ */
+function normalizeUuid(raw) {
+  const s = String(raw).trim().toLowerCase();
+  if (s === '') return '';
+  const hex = s.replace(/-/g, '');
+  if (!/^[0-9a-f]{32}$/.test(hex)) return s; // 不是 32 位十六进制就原样保留，交给校验去报
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20),
+  ].join('-');
 }
 
 let records;
@@ -233,8 +260,18 @@ for (const r of records) {
     problems.push(`第 ${r.line} 行：uid 为负数（${r.uid}）`);
     continue;
   }
-  // uuid 为空是合法的：从没经 Yggdrasil 登录过的角色在皮肤站也没有 uuid 行。
-  const uuid = r.uuid && /^[0-9a-fA-F-]{32,36}$/.test(r.uuid.replace(/\s/g, '')) ? r.uuid.trim() : null;
+  /*
+   * uuid 为空是合法的：从没经 Yggdrasil 登录过的角色在皮肤站也没有 uuid 行。
+   *
+   * 这里再归一化一次（parseRecords 已经做过）是为了 JSON 输入那条路径 ——
+   * 它不经过 parseRecords。库里的值必须**只有一种形式**：带连字符的小写。
+   * 混着无连字符的形式时，findCharacterByUuid() 的精确匹配会全部落空，
+   * 而且不报错 —— 症状只是 skin 账本里所有账号都退化成 uid:<n> 占位符。
+   */
+  const normalized = r.uuid ? normalizeUuid(r.uuid) : '';
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(normalized)
+    ? normalized
+    : null;
   valid.push({ bsPid: r.pid, bsUid: uid, name: r.name, uuid });
 }
 

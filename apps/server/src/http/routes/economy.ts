@@ -24,7 +24,6 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
 import { isSafeUuid } from '@kokuu/protocol';
-import { config } from '../../config.ts';
 import { newToken, shortId } from '../../lib/crypto.ts';
 import { ConfigValidationError, IdempotencyConflict } from '../../store/index.ts';
 import {
@@ -64,63 +63,88 @@ const GameCurrencyBody = z
 
 export function registerEconomyRoutes(app: FastifyInstance, ctx: AppContext): void {
   /**
-   * 门槛：这些接口操作的是**平台自带的账本**。
+   * 账本门槛：后端不可用就明确拒绝，并**说清为什么、要去配什么**。
    *
-   * 默认部署（`KP_LEDGER_MODE=external`）下平台不持有账本 ——
-   * 唯一账本是 Blessing Skin 的 `users.score` + `credit_ledger`。
-   * 这时所有「读写平台账本」的接口都必须明确回 501 并说清原因，
-   * 而不是拿空数据装作正常。
+   * 用 503 而不是 501：以前这些接口回 501，语义是「平台有意不持有账本」——
+   * 那是设计决定，运维看到就知道别找了。现在语义变了：账本在皮肤站，
+   * 接口是存在的，只是还没接通。503 读作「去把它配起来」，501 读作「设计如此」，
+   * 两者对排查的指向完全相反。
    *
-   * 为什么用 501 而不是 404 或 500：
-   *   - 404 会让调用方以为路径写错了，去改 URL
-   *   - 500 会让人以为是 bug，去翻日志
-   *   - 501 的意思是「这个功能被有意地不实现」，指向的是设计决定
+   * 原因文本来自后端的 `status().reason`，所以它是**能直接显示给管理员看的**。
    */
-  const requireOwnedLedger = (): void => {
-    if (config.ledgerMode === 'standalone') return;
+  const requireLedger = (): ReturnType<AppContext['ledger']['status']> => {
+    const status = ctx.ledger.status();
+    if (!status.available) {
+      throw new HttpError('LEDGER_UNAVAILABLE', status.reason ?? '积分账本后端不可用');
+    }
+    return status;
+  };
+
+  /** 某项能力后端支不支持。不支持就直说，而不是让它点了报一个看不懂的错。 */
+  const requireCapability = (
+    status: ReturnType<AppContext['ledger']['status']>,
+    capability: keyof ReturnType<AppContext['ledger']['status']>['capabilities'],
+    what: string,
+  ): void => {
+    if (status.capabilities[capability]) return;
     throw new HttpError(
-      'NOT_IMPLEMENTED',
-      '平台不持有积分账本。唯一账本是皮肤站的 users.score + credit_ledger' +
-        '（由 kokuu-credit 维护），自建第二个余额会造成两个真相源。' +
-        '积分读写请走对接层；确实需要平台自带账本（例如没有皮肤站的部署）' +
-        '请显式设置 KP_LEDGER_MODE=standalone。详见 docs/ECOSYSTEM.md。',
+      'LEDGER_UNAVAILABLE',
+      `当前账本后端（${status.backend}）不支持${what}。` + (status.detail ?? ''),
     );
   };
 
   /**
-   * 经济模块的**状态**。这个接口永远返回 200，不会 501。
+   * 账户标识校验。
    *
-   * 为什么需要它：默认部署下「读平台账本」的接口全部 501，于是前端只能靠
-   * 「请求失败」去猜自己的处境 —— 结果就是整个经济页面看起来是坏的
-   * （统计卡是 `—`、列表报错、配置卡报错、连能用的「游戏内货币」也点不到，
+   * 两种合法形式：
+   *   - MC UUID            （standalone 账本的主键；skin 账本靠 characters 反查）
+   *   - `uid:<数字>`        （skin 账本里**还没进过 MC 服**的站点账号）
+   *
+   * 为什么要允许第二种：积分归**站点账号**（`users.score`），而 `characters`
+   * 只有进过服的角色。只收 UUID 的话，注册了但没玩过的账号在平台上就
+   * 永远无法调整积分 —— 而它们的积分是真实存在、也该被管理的。
+   */
+  const ACCOUNT_REF = /^(?:uid:\d{1,10}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/;
+
+  const requireAccountRef = (raw: string): string => {
+    if (!ACCOUNT_REF.test(raw)) {
+      throw HttpError.badRequest('账户标识格式不正确（应为 MC UUID 或 uid:<数字>）');
+    }
+    return raw;
+  };
+
+  /**
+   * 经济模块的**状态**。这个接口永远返回 200，不会 503。
+   *
+   * 为什么需要它：以前读账本的接口一律 501，于是前端只能靠「请求失败」去猜
+   * 自己的处境 —— 结果就是整个经济页面看起来是坏的
+   * （统计卡是 `—`、列表报错、配置卡报错，连能用的「游戏内货币」也点不到，
    * 因为它的入口要求先选中一个账户）。
    *
    * 有了这个接口，前端就能**明确区分**三种情况并各自渲染：
-   *   1. 站点积分由外部账本持有（默认）→ 说明现状 + 怎么接入，不是错误
-   *   2. 平台自带账本（standalone）→ 渲染完整的账户/流水/配置界面
-   *   3. 游戏内货币 → 这条路径与账本模式无关，始终可用
+   *   1. 账本后端已就绪（standalone 或接好接口的 skin）→ 渲染完整界面
+   *   2. 账本后端不可用 → 说明现状 + 缺什么，不是错误
+   *   3. 游戏内货币 → 这条路径与账本后端无关，始终可用
    */
   app.get('/_api/economy/status', async (request) => {
     requirePermission(request, 'economy.view');
-    const owned = config.ledgerMode === 'standalone';
+    const ledger = ctx.ledger.status();
 
     return {
       ledger: {
-        mode: config.ledgerMode,
-        owned,
-        title: owned ? '站点积分：平台自带账本' : '站点积分：由皮肤站持有，平台不建账本',
-        detail: owned
-          ? '平台正在持有积分账本。这是给「没有皮肤站」的部署用的兜底模式。'
-          : '唯一账本是皮肤站的 users.score + credit_ledger（由 kokuu-credit 维护）。'
-            + '平台自建第二个余额会造成两个真相源 —— 两边对不上时无从判断谁对，'
-            + '而这正是生态里反复警告过的事。',
-        howToEnable: owned ? null : 'KP_LEDGER_MODE=standalone',
-        docs: 'docs/ECOSYSTEM.md',
+        backend: ledger.backend,
+        available: ledger.available,
+        /** 不可用时的原因。界面直接显示这句话 —— 它必须能被人看懂并据此去配。 */
+        reason: ledger.reason,
+        capabilities: ledger.capabilities,
+        title: ledger.title,
+        detail: ledger.detail,
+        docs: ledger.docs,
       },
       gameCurrency: {
         available: true,
         note: '游戏内货币的权威在 MC 服务端的经济插件（Vault），平台通过 Agent 读写，'
-          + '与账本模式无关。',
+          + '与账本后端无关。',
       },
     };
   });
@@ -158,11 +182,11 @@ export function registerEconomyRoutes(app: FastifyInstance, ctx: AppContext): vo
 
   app.get('/_api/economy/accounts', async (request) => {
     requirePermission(request, 'economy.view');
-    requireOwnedLedger();
+    requireLedger();
     const query = request.query as Record<string, unknown>;
     const { page, size } = pageParams(query);
 
-    const result = ctx.store.listEconomyAccounts({
+    const result = await ctx.ledger.listAccounts({
       kw: optStr(query, 'kw'),
       page,
       size,
@@ -185,15 +209,18 @@ export function registerEconomyRoutes(app: FastifyInstance, ctx: AppContext): vo
     '/_api/economy/accounts/:uuid',
     async (request) => {
       requirePermission(request, 'economy.view');
-      requireOwnedLedger();
+      requireLedger();
       const uuid = request.params.uuid;
-      if (!isSafeUuid(uuid)) throw HttpError.badRequest('UUID 格式不正确');
+      requireAccountRef(uuid);
 
-      const account = ctx.store.getEconomyAccount(uuid);
-      const player = ctx.store.getPlayer(uuid);
+      const account = await ctx.ledger.getAccount(uuid);
+      // 玩家档案按 MC UUID 查；`uid:<n>` 这种站点账号标识自然查不到，
+      // 所以这里不能因为 player 为空就报「没有该玩家的记录」——
+      // 账本里有这个账号就够了。
+      const player = isSafeUuid(uuid) ? ctx.store.getPlayer(uuid) : undefined;
       if (!account && !player) throw HttpError.notFound('没有该玩家的记录');
 
-      const ledger = ctx.store.listLedger({ uuid, page: 1, size: 50 });
+      const ledger = await ctx.ledger.listLedger({ uuid, page: 1, size: 50 });
 
       return {
         account: {
@@ -220,9 +247,9 @@ export function registerEconomyRoutes(app: FastifyInstance, ctx: AppContext): vo
     '/_api/economy/accounts/:uuid/adjust',
     async (request) => {
       const account = requirePermission(request, 'economy.manage');
-      requireOwnedLedger();
+      requireLedger();
       const uuid = request.params.uuid;
-      if (!isSafeUuid(uuid)) throw HttpError.badRequest('UUID 格式不正确');
+      requireAccountRef(uuid);
 
       const parsed = AdjustBody.safeParse(request.body ?? {});
       if (!parsed.success) {
@@ -244,7 +271,7 @@ export function registerEconomyRoutes(app: FastifyInstance, ctx: AppContext): vo
             params: { delta: parsed.data.delta, note: parsed.data.note, eventId },
           },
           () =>
-            ctx.store.adjustBalance({
+            ctx.ledger.adjust({
               uuid,
               delta: parsed.data.delta,
               source: 'admin',
@@ -328,15 +355,15 @@ export function registerEconomyRoutes(app: FastifyInstance, ctx: AppContext): vo
 
   app.get('/_api/economy/ledger', async (request) => {
     requirePermission(request, 'economy.view');
-    requireOwnedLedger();
+    requireLedger();
     const query = request.query as Record<string, unknown>;
     const { page, size } = pageParams(query);
 
-    const result = ctx.store.listLedger({
-      uuid: optStr(query, 'uuid'),
-      source: optStr(query, 'source'),
-      from: optInt(query, 'from'),
-      to: optInt(query, 'to'),
+    const result = await ctx.ledger.listLedger({
+      uuid: optStr(query, 'uuid') ?? undefined,
+      source: optStr(query, 'source') ?? undefined,
+      from: optInt(query, 'from') ?? undefined,
+      to: optInt(query, 'to') ?? undefined,
       page,
       size,
     });
@@ -362,8 +389,9 @@ export function registerEconomyRoutes(app: FastifyInstance, ctx: AppContext): vo
 
   app.get('/_api/economy/stats', async (request) => {
     requirePermission(request, 'economy.view');
-    requireOwnedLedger();
-    const stats = ctx.store.economyStats();
+    const status = requireLedger();
+    requireCapability(status, 'stats', '全站统计');
+    const stats = await ctx.ledger.stats();
     const config = ctx.store.getConfig();
 
     return {
@@ -384,13 +412,15 @@ export function registerEconomyRoutes(app: FastifyInstance, ctx: AppContext): vo
 
   app.get('/_api/economy/config', async (request) => {
     requirePermission(request, 'economy.view');
-    requireOwnedLedger();
+    const status = requireLedger();
+    requireCapability(status, 'config', '兑换比例与限额配置');
     return { config: ctx.store.getConfig() };
   });
 
   app.put('/_api/economy/config', async (request) => {
     requirePermission(request, 'economy.manage');
-    requireOwnedLedger();
+    const status = requireLedger();
+    requireCapability(status, 'config', '兑换比例与限额配置');
     const body = request.body;
     if (typeof body !== 'object' || body === null) {
       throw HttpError.badRequest('请求体必须是键值对象');

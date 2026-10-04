@@ -15,11 +15,20 @@ import {
 } from '@kokuu/protocol';
 
 import type { AccountRow, Store } from '../store/index.ts';
+import type { Ledger } from '../ledger/index.ts';
 import type { AgentGateway } from '../agent/gateway.ts';
 import type { EventsHub } from '../events/hub.ts';
 
 export interface AppContext {
   store: Store;
+  /**
+   * 积分账本。
+   *
+   * 所有经济接口都经这一层，而不是直接调 `store.*` ——
+   * 账本可能是平台自带的 SQLite，也可能是皮肤站的 `users.score`。
+   * 具体是哪个由 `KP_LEDGER_MODE` 决定，见 src/ledger/index.ts。
+   */
+  ledger: Ledger;
   gateway: AgentGateway;
   hub: EventsHub;
   startedAt: number;
@@ -60,6 +69,14 @@ const CODE_TO_STATUS: Record<string, number> = {
   // 501：功能**有意的**未实现，不是坏了。用于「平台不持有账本」这类
   // 设计决定 —— 回 500 会让人以为是 bug，回 404 会让人以为路径写错。
   NOT_IMPLEMENTED: 501,
+  /**
+   * 503：功能是存在的，只是**后端暂时不可用**（没配好、连不上、皮肤站那边还没部署接口）。
+   *
+   * 与 501 的区别很重要：501 读作「设计如此，别找了」，
+   * 503 读作「去把它配起来」。经济模块从「平台不持有账本」改成
+   * 「账本在皮肤站，接上就能用」之后，绝大多数情况都是后者。
+   */
+  LEDGER_UNAVAILABLE: 503,
   NODE_OFFLINE: 502,
   NODE_DISABLED: 502,
   NODE_ERROR: 502,

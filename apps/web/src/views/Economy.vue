@@ -60,7 +60,15 @@ const statusLoading = ref(false);
 const statusError = ref('');
 
 /** 平台是否真的持有积分账本。false 时账户/流水/配置界面整体隐藏。 */
-const ledgerOwned = computed(() => status.value?.ledger.owned === true);
+const ledgerAvailable = computed(() => status.value?.ledger.available === true);
+
+/**
+ * 账本后端支不支持改「兑换比例 / 限额」。
+ *
+ * skin 模式下属**皮肤站**（kokuu_exchange 的配置），平台改不了 ——
+ * 两处都能改就会出现「谁最后写谁赢」。所以配置卡只在后端支持时渲染。
+ */
+const ledgerCanConfig = computed(() => status.value?.ledger.capabilities.config === true);
 
 async function loadStatus(): Promise<void> {
   statusLoading.value = true;
@@ -219,7 +227,7 @@ const detailLoading = ref(false);
 const detailError = ref('');
 
 async function loadAccounts(): Promise<void> {
-  if (!ledgerOwned.value) return;
+  if (!ledgerAvailable.value) return;
   accountsLoading.value = true;
   accountsError.value = '';
   try {
@@ -243,7 +251,7 @@ async function loadAccounts(): Promise<void> {
 }
 
 async function loadDetail(): Promise<void> {
-  if (!ledgerOwned.value) return;
+  if (!ledgerAvailable.value) return;
   if (!selectedUuid.value) {
     detail.value = { account: null, ledger: [], total: 0 };
     return;
@@ -353,7 +361,7 @@ const configSaving = ref(false);
 const configForm = reactive({ ratio: 1, min_coin: 0, currency: '金币', daily_limit: 0, enabled: true });
 
 async function loadStats(): Promise<void> {
-  if (!ledgerOwned.value) return;
+  if (!ledgerAvailable.value) return;
   statsError.value = '';
   try {
     const result = await economyApi.stats();
@@ -375,7 +383,7 @@ function applyConfigToForm(value: EconomyConfig): void {
 }
 
 async function loadConfig(): Promise<void> {
-  if (!ledgerOwned.value) return;
+  if (!ledgerAvailable.value) return;
   configLoading.value = true;
   configError.value = '';
   try {
@@ -434,7 +442,7 @@ onMounted(async () => {
 
   // 账本相关的请求只在平台真的持有账本时才发 —— 否则必然一串 501，
   // 那正是让这个页面显得「坏了」的原因。
-  if (ledgerOwned.value) {
+  if (ledgerAvailable.value) {
     await Promise.all([loadAccounts(), loadStats(), loadConfig()]);
     if (selectedUuid.value) await loadDetail();
   }
@@ -454,7 +462,7 @@ const openAdjust = (): void => {
 
 const refreshAll = (): void => {
   void loadBalance();
-  if (ledgerOwned.value) {
+  if (ledgerAvailable.value) {
     void Promise.all([loadAccounts(), loadStats(), loadConfig(), loadDetail()]);
   }
 };
@@ -608,22 +616,21 @@ const refreshAll = (): void => {
 
       <el-skeleton v-if="statusLoading && !status" :rows="3" animated />
 
-      <!-- 平台不持有账本：这是**正常状态**，给说明而不是错误 -->
-      <template v-else-if="!ledgerOwned">
+      <!-- 账本后端不可用：说明缺什么，不是错误 -->
+      <template v-else-if="!ledgerAvailable">
         <el-alert
           type="info"
           :closable="false"
           show-icon
-          :title="status?.ledger?.title ?? '平台不持有积分账本'"
-          data-testid="economy-ledger-external"
+          :title="status?.ledger?.title ?? '站点积分账本未就绪'"
+          data-testid="economy-ledger-unavailable"
         >
           <template #default>
-            <p class="ledger-note">{{ status?.ledger?.detail }}</p>
-            <p v-if="status?.ledger?.howToEnable" class="ledger-note">
-              确实需要平台自带账本（例如没有皮肤站的部署），设置
-              <code class="kp-mono">{{ status.ledger.howToEnable }}</code>
-              后重启即可启用本页的账户 / 流水 / 配置界面。
+            <!-- reason 是后端给的、能直接看懂的一句话：缺什么、要去配什么 -->
+            <p v-if="status?.ledger?.reason" class="ledger-note ledger-note--reason">
+              {{ status.ledger.reason }}
             </p>
+            <p class="ledger-note">{{ status?.ledger?.detail }}</p>
             <p v-if="status?.ledger?.docs" class="ledger-note">
               对接方案与取舍见 <code class="kp-mono">{{ status.ledger.docs }}</code>。
             </p>
@@ -631,8 +638,9 @@ const refreshAll = (): void => {
         </el-alert>
 
         <p class="kp-text-muted ledger-note">
-          上面这一块整块被隐藏，是因为平台确实没有这些数据 ——
+          上面这一块整块被隐藏，是因为平台确实拿不到这些数据 ——
           用空表格或报错来占位只会让人以为功能坏了。
+          游戏内货币不受影响，见上方。
         </p>
       </template>
 
@@ -806,7 +814,7 @@ const refreshAll = (): void => {
           </el-card>
         </div>
 
-        <el-card shadow="never">
+        <el-card v-if="ledgerCanConfig" shadow="never">
           <template #header>
             <div class="card-head">
               <span>经济配置</span>
@@ -1010,6 +1018,13 @@ const refreshAll = (): void => {
 .ledger-note {
   margin: 6px 0;
   line-height: 1.7;
+}
+
+/* 后端给的那句「缺什么、去配什么」，视觉上要压过下面的背景说明 —— 
+   它是这个提示里唯一能指导行动的信息。 */
+.ledger-note--reason {
+  font-weight: 600;
+  color: var(--el-text-color-primary);
 }
 
 .uuid {

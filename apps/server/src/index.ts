@@ -9,6 +9,7 @@
 import type { IncomingMessage } from 'node:http';
 
 import { config, describeConfig } from './config.ts';
+import { createLedger } from './ledger/index.ts';
 import { createLogger, log } from './logger.ts';
 import { Store, type AccountRow } from './store/index.ts';
 import { AgentGateway, toProtocolPunishment, type AgentConnection } from './agent/gateway.ts';
@@ -177,6 +178,7 @@ function main(): void {
   // ── 上下文 ─────────────────────────────────────────────────
   const ctx: AppContext = {
     store,
+    ledger: createLedger(config, store),
     gateway,
     hub,
     startedAt,
