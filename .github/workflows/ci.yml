@@ -302,10 +302,19 @@ jobs:
           ok=
           for i in $(seq 1 45); do
             if curl -sf http://127.0.0.1:8787/api/ping >/dev/null; then ok=1; break; fi
-            # 进程退出就别空等了，直接把日志打出来
+            # 进程退出就别空等了，直接把**退出码与 OOM 状态**一并打出来。
+            # ★ 退出码是关键线索：137 = SIGKILL(OOM)，
+            #   1 = 进程自己报错退出，125/126 = docker 层面的问题。
+            #   只报「容器已退出」的话，这三种情况看起来一模一样。
             if ! docker inspect -f '{{.State.Running}}' kk 2>/dev/null | grep -q true; then
-              echo "::error::容器已退出，日志如下："
+              code=$(docker inspect -f '{{.State.ExitCode}}' kk 2>/dev/null || echo '?')
+              oom=$(docker inspect -f '{{.State.OOMKilled}}' kk 2>/dev/null || echo '?')
+              echo "::error title=容器退出::退出码=$code OOMKilled=$oom"
+              echo "--- docker logs ---"
               docker logs kk 2>&1 | tail -30
+              echo "--- 镜像内实际文件（排查 COPY 是否到位）---"
+              docker run --rm --entrypoint sh kokuu-credit-admin:ci -c \
+                'ls -la /app/server/src/index.js /app/web/dist 2>&1 | head -12; echo "--- id ---"; id' 2>&1 | head -20
               docker rm -f kk 2>/dev/null || true
               docker volume rm kk-data 2>/dev/null || true
               exit 1
