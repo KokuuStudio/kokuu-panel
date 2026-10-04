@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 默认给最小权限；本流水线只读代码，不需要写。
+permissions:
+  contents: read
+
+# 同分支重复推送时取消上一次，省 runner 也省等待。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── 凭据扫描 ────────────────────────────────────────────────────────
+  # 单独一个 job、并且放最前面：它只依赖 node，秒级完成。
+  # 本仓库出过一次「把默认口令写进会被提交的源文件」的事故，
+  # 这个 job 就是防止再犯 —— 让它第一时间失败。
+  secrets:
+    name: 凭据扫描
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: 扫描会被提交的文件里有没有口令/密钥
+        run: node tools/scan-secrets.mjs
+
+  # ── 平台侧：类型检查 / 测试 / 前端构建 ───────────────────────────────
+  node:
+    name: 平台（类型检查 / 测试 / 构建）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # node:sqlite 需要 >= 22.5，用 24 与 engines 字段保持一致
+          node-version: '24'
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck
+
+      - name: 单元测试（账本与封禁的不变量）
+        run: pnpm test
+
+      - name: 前端构建
+        run: pnpm build
+
+  # ── 服务端侧：两个插件都要能构建，且产物必须能在 Java 8 上加载 ────────
+  java:
+    name: 插件构建（Java 8 字节码）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          # 用 21 而不是 25：两者都能 --release 8，21 是 LTS，
+          # 行为更稳定，也少一层「下个 JDK 会不会又不支持 release 8」的担心。
+          java-version: '21'
+          cache: maven
+
+      - name: 构建 KokuuAgent
+        run: mvn -B -DskipTests package
+        working-directory: agent
+
+      - name: 构建 KokuuLegacyFix
+        run: mvn -B -DskipTests package
+        working-directory: legacy-fix
+
+      # 这一步是这个项目特有的：docs/ARCHITECTURE.md §4.1 要求字节码必须是 Java 8，
+      # 但 JDK 编译时的 "source value 8 is obsolete" 警告一直在劝人把目标调高。
+      # 1.12.2 服务端只能跑 Java 8，调高的后果是生产上 UnsupportedClassVersionError，
+      # 而那台服务端跑不了这套测试。所以在这里机器化地卡住。
+      - name: 断言产物能在 Java 8 上加载
+        run: node tools/check-java8-bytecode.mjs

@@ -17,6 +17,7 @@
     "verify": "node tools/verify-e2e.mjs --user admin",
     "verify:static": "node tools/verify-static.mjs",
     "verify:secrets": "node tools/scan-secrets.mjs",
+    "check:bytecode": "node tools/check-java8-bytecode.mjs",
     "start": "pnpm --filter @kokuu/server start",
     "mock-agent": "node tools/mock-agent.mjs",
     "characters": "node tools/import-characters.mjs",
