@@ -22,6 +22,46 @@ redis:
 queue:
   key: 'bs:exchange:queue'
   result-key: 'bs:exchange:result'
+  # 资产指令队列（中间件 → 插件）：{event_id, player, uuid, asset, delta, note}
+  asset-key: 'bs:asset:cmd'
+  # 事件队列（插件 → 中间件）：{event_id, player, uuid, asset, delta, credit, balance_after, ts}
+  # ★ 必须与中间件 .env 的 REDIS_EVENT_KEY 完全一致。
+  event-key: 'bs:asset:event'
+
+# ────────────────────────────────────────────────────────
+#  金币自动回流（游戏内赚金币 → 自动按比例给积分）
+# ────────────────────────────────────────────────────────
+#
+#  原理：每 interval-seconds 秒扫一遍在线玩家余额，跟上次快照比，
+#        正向增量按 ratio 折算成积分，**先扣掉金币再上报**。
+#
+#  ⚠️ 为什么默认关闭：
+#     这功能会自动扣玩家的金币。比例没配好（ratio 太小 = 抽太狠）
+#     会直接引发投诉。开箱即用必须是安全值 —— 所以这里 enabled: false。
+#
+#  ⚠️ ratio 必须与中间件后台「金币换积分」的比例保持一致。
+#     两边不一致不会造币（比例只在插件侧算），但玩家会觉得换算很亏或很赚。
+#
+#  为什么不做成「监听经济插件的事件」：
+#     Vault 生态没有统一的「玩家赚钱」事件，EssentialsX / CMI / PlayerPoints
+#     三家 API 全不一样，而本插件不硬依赖任何一个后端。
+#     只有 getBalance() 是所有后端都保证的。
+reflow:
+  enabled: false
+  # 多少金币 = 1 积分。与中间件后台的兑换比例填同一个数。
+  ratio: 1000
+  # 扫描间隔（秒）。太小会频繁读余额（主线程开销），太大会漏掉大额增量。
+  interval-seconds: 30
+  # 单次增量低于这个值不抽成 —— 滤掉小额定投式的零碎进账。
+  min-delta: 1000
+  # 单次增量上限，超过按此值截断。
+  # 用来防止「管理员一次发 10 万」被误判成玩家赚的，从而被自动抽走。
+  max-delta: 10000000
+  #
+  # 运行时开关（不写盘）：/exbridge reflow on | off | scan
+  #   on    开启并立刻开始扫描
+  #   off   停止
+  #   scan  立刻手动扫一次（玩家说没收到积分时用来自查）
 
 # ────────────────────────────────────────────────────────
 #  经济插件适配

@@ -46,8 +46,11 @@ public final class ExchangeBridge extends JavaPlugin implements CommandExecutor,
 
     private BridgeConfig cfg;
     private EconomyHook eco;
+    private PointsHook pts;
     private ExchangeWorker worker;
+    private AssetWorker assetWorker;
     private QueuePoller poller;
+    private EarningsWatcher reflow;
 
     @Override
     public void onEnable() {
@@ -66,10 +69,13 @@ public final class ExchangeBridge extends JavaPlugin implements CommandExecutor,
 
         registerCommands();
         bindEconomy();
+        bindPoints();
         startWorker();
+        startReflow();
 
         getLogger().info("ExchangeBridge 已启用");
-        getLogger().info("  队列：queue=" + cfg.queueKey + "  result=" + cfg.resultKey);
+        getLogger().info("  兑换队列：queue=" + cfg.queueKey + "  result=" + cfg.resultKey);
+        getLogger().info("  资产队列：asset=" + cfg.assetQueueKey + "  event=" + cfg.eventQueueKey);
         if (!eco.available()) {
             getLogger().warning("⚠ 未检测到可用的经济插件 —— 插件已加载，但**所有兑换都会失败并退款**。");
             getLogger().warning("  原因：" + eco.lastError());
@@ -77,10 +83,16 @@ public final class ExchangeBridge extends JavaPlugin implements CommandExecutor,
             getLogger().info("  经济插件：" + eco.mode().label() + " → "
                 + eco.resolvedClass() + "  " + eco.describeMethods());
         }
+        if (pts.available()) {
+            getLogger().info("  点券插件：" + pts.describeMethods());
+        } else {
+            getLogger().info("  点券插件：未绑定（" + pts.lastError() + "）—— 点券功能不可用");
+        }
     }
 
     @Override
     public void onDisable() {
+        if (reflow != null) reflow.stop();
         if (poller != null) poller.stop();
         getLogger().info("ExchangeBridge 已卸载");
     }
@@ -97,23 +109,65 @@ public final class ExchangeBridge extends JavaPlugin implements CommandExecutor,
         getLogger().warning("  · 若它不走 Vault，在 config.yml 的 economy.class-names 里补上它的经济类全名");
     }
 
+    /**
+     * 绑定 PlayerPoints。
+     *
+     * <p>绑不上不算故障 —— 服务器可能压根没装点券插件。
+     * 只打 info 不打 warning，避免每次启动都刷一条让人以为坏了的警告。
+     */
+    private void bindPoints() {
+        pts = PointsHook.bind();
+    }
+
     private void startWorker() {
         worker = new ExchangeWorker(this, cfg, eco);
-        poller = new QueuePoller(this, cfg, worker);
+        assetWorker = new AssetWorker(this, cfg, eco, pts);
+        poller = new QueuePoller(this, cfg, worker, assetWorker);
         poller.start();
     }
 
-    private void reload() {
-        if (poller != null) poller.stop();
-        reloadConfig();
-        cfg = BridgeConfig.load(getConfig());
-        List<String> problems = cfg.problems();
-        if (!problems.isEmpty()) {
-            getLogger().severe("配置有问题，未重载：" + String.join("；", problems));
+    /**
+     * 启动金币回流监听。
+     *
+     * <p>只有开关打开才注册事件监听器 —— 关着的时候连 PlayerJoin 都不接，
+     * 完全零开销。
+     */
+    private void startReflow() {
+        if (!cfg.reflowEnabled) {
+            getLogger().info(" 金币回流：未启用（reflow.enabled=false）");
             return;
         }
+        reflow = new EarningsWatcher(this, cfg, eco, poller);
+        getServer().getPluginManager().registerEvents(reflow, this);
+        reflow.start();
+    }
+
+    /**
+     * 重载配置。
+     *
+     * <p>★ 顺序刻意是「先校验、后停旧实例」：
+     *   反过来写（先 stop 再校验）的话，新配置有问题时直接 return，
+     *   旧 worker 已经停了 —— 插件进入「加载着但什么都不工作」的半死状态，
+     *   日志里只有一行「配置有问题，未重载」，非常难排查。
+     */
+    private void reload() {
+        reloadConfig();
+        BridgeConfig next = BridgeConfig.load(getConfig());
+        List<String> problems = next.problems();
+        if (!problems.isEmpty()) {
+            getLogger().severe("配置有问题，未重载（插件仍在用旧配置运行）："
+                    + String.join("；", problems));
+            return;
+        }
+
+        if (reflow != null) reflow.stop();
+        if (poller != null) poller.stop();
+
+        cfg = next;
         bindEconomy();
+        bindPoints();
         startWorker();
+        startReflow();
         getLogger().info("配置已重载");
     }
 
@@ -165,14 +219,88 @@ public final class ExchangeBridge extends JavaPlugin implements CommandExecutor,
                 sender.sendMessage(ChatColor.RED + "只能查询自己的余额");
                 return true;
             }
-            String bal = eco.balance(args[1]);
-            sender.sendMessage(bal == null
-                    ? ChatColor.YELLOW + "查不到该玩家的余额（需在线且经济插件可用）"
-                    : ChatColor.GREEN + args[1] + " 的余额：" + bal);
+            String coin = eco.balance(args[1]);
+            String points = pts == null ? null : String.valueOf(pts.look(args[1]));
+            sender.sendMessage(ChatColor.GREEN + args[1] + " 的余额：");
+            sender.sendMessage(ChatColor.GRAY + "  金币：" + (coin == null ? "查不到" : coin));
+            sender.sendMessage(ChatColor.GRAY + "  点券：" + (points == null ? "查不到" : points));
             return true;
         }
 
-        sender.sendMessage(ChatColor.YELLOW + "用法：/exbridge status|reconnect|balance <玩家>|reload");
+        // ── 资产操作：coin / points 的查看与增减 ──────────────────
+        // 全部要求管理权限。这些命令直接改玩家资产，
+        // 普通玩家能调就等于随便给自己加钱。
+        if (sub.equals("coin") || sub.equals("金币")
+                || sub.equals("points") || sub.equals("点券")
+                || sub.equals("give") || sub.equals("take")) {
+            if (!sender.hasPermission(PERM_ADMIN)) {
+                sender.sendMessage(ChatColor.RED + "你没有权限（" + PERM_ADMIN + "）");
+                return true;
+            }
+            return assetCommand(sender, sub, args);
+        }
+
+        // ── 金币回流的手动操作 ────────────────────────────────────
+        // scan = 立刻扫一次（不重启监听，用于「玩家说没收到积分」时自查）
+        // on / off = 运行期开关（不写盘，重启后仍以 config.yml 为准）
+        if (sub.equals("reflow") || sub.equals("回流")) {
+            if (!sender.hasPermission(PERM_ADMIN)) {
+                sender.sendMessage(ChatColor.RED + "你没有权限（" + PERM_ADMIN + "）");
+                return true;
+            }
+            return reflowCommand(sender, sub, args);
+        }
+
+        sender.sendMessage(ChatColor.YELLOW
+                + "用法：/exbridge status|reconnect|balance <玩家>|reload|reflow [scan|on|off]");
+        return true;
+    }
+
+    /**
+     * 回流的手动操作。
+     *
+     * <p>on/off 只改内存里的 flag，**不写 config.yml** —— 运行时开关与持久配置
+     * 混在一起会出现「重启后行为突变」这类极难复现的问题。真要持久化就改配置文件再 reload。
+     */
+    private boolean reflowCommand(CommandSender s, String sub, String[] args) {
+        String act = args.length >= 2 ? args[1].toLowerCase() : "scan";
+
+        if (act.equals("on") || act.equals("开")) {
+            if (reflow != null && reflow.isRunning()) {
+                s.sendMessage(ChatColor.YELLOW + "回流已在运行");
+                return true;
+            }
+            if (!eco.available()) {
+                s.sendMessage(ChatColor.RED + "经济插件不可用，回流无法启动：" + eco.lastError());
+                return true;
+            }
+            cfg.reflowEnabled = true;
+            startReflow();
+            s.sendMessage(ChatColor.GREEN + "回流已开启（本次仅内存生效，重启后以 config.yml 为准）");
+            return true;
+        }
+        if (act.equals("off") || act.equals("关")) {
+            if (reflow != null) reflow.stop();
+            cfg.reflowEnabled = false;
+            s.sendMessage(ChatColor.YELLOW + "回流已停止（本次仅内存生效，重启后以 config.yml 为准）");
+            return true;
+        }
+        if (act.equals("scan") || act.equals("扫描")) {
+            if (!cfg.reflowEnabled || reflow == null || !reflow.isRunning()) {
+                s.sendMessage(ChatColor.YELLOW + "回流没在运行，先 /exbridge reflow on");
+                return true;
+            }
+            if (!eco.available()) {
+                s.sendMessage(ChatColor.RED + "经济插件不可用：" + eco.lastError());
+                return true;
+            }
+            long before = reflow.reportedCount();
+            reflow.scanNow();
+            long after = reflow.reportedCount();
+            s.sendMessage(ChatColor.GREEN + "已手动扫描一次，新增上报 " + (after - before) + " 条");
+            return true;
+        }
+        s.sendMessage(ChatColor.YELLOW + "用法：/exbridge reflow [scan|on|off]");
         return true;
     }
 
@@ -183,9 +311,11 @@ public final class ExchangeBridge extends JavaPlugin implements CommandExecutor,
         }
         if (args.length == 1) {
             List<String> out = new ArrayList<>();
-            List<String> all = new ArrayList<>(Arrays.asList("status", "reconnect", "balance", "reload"));
+            List<String> all = new ArrayList<>(Arrays.asList(
+                    "status", "reconnect", "balance", "reload", "reflow"));
             if (sender.hasPermission(PERM_ADMIN)) {
-                all.addAll(Arrays.asList("诊断", "重连", "重载"));
+                all.addAll(Arrays.asList("coin", "points", "give", "take",
+                        "诊断", "重连", "重载", "金币", "点券", "回流"));
             }
             for (String s : all) {
                 if (s.startsWith(args[0].toLowerCase())) {
@@ -194,10 +324,111 @@ public final class ExchangeBridge extends JavaPlugin implements CommandExecutor,
             }
             return out;
         }
+        if (args.length == 2 && args[0].equalsIgnoreCase("reflow")
+                && sender.hasPermission(PERM_ADMIN)) {
+            return Arrays.asList("scan", "on", "off");
+        }
+        if (args.length == 2 && sender.hasPermission(PERM_ADMIN)) {
+            // 资产类命令的第二个参数是玩家名 —— 补全在线玩家
+            String sub = args[0].toLowerCase();
+            boolean wantsPlayer = sub.equals("coin") || sub.equals("金币")
+                    || sub.equals("points") || sub.equals("点券")
+                    || sub.equals("give") || sub.equals("take");
+            if (wantsPlayer) {
+                List<String> names = new ArrayList<>();
+                for (Player p : Bukkit.getOnlinePlayers()) {
+                    names.add(p.getName());
+                }
+                return names;
+            }
+        }
         if (args.length == 2 && "balance".equalsIgnoreCase(args[0]) && sender instanceof Player) {
             return Arrays.asList(((Player) sender).getName());
         }
         return Collections.emptyList();
+    }
+
+    /**
+     * 资产操作命令的实现。
+     *
+     * <p>支持两种写法：
+     * <pre>
+     *   /exbridge coin &lt;玩家&gt; &lt;+|-&gt;&lt;数额&gt;     改金币
+     *   /exbridge points &lt;玩家&gt; &lt;+|-&gt;&lt;数额&gt;   改点券
+     *   /exbridge give coin|points &lt;玩家&gt; &lt;数额&gt;   等价写法
+     * </pre>
+     *
+     * <p>★ 经济操作必须在主线程执行。这里能直接调，是因为命令本身
+     * 就跑在主线程（Bukkit 的命令回调），不像队列消费那样需要切线程。
+     */
+    private boolean assetCommand(CommandSender s, String sub, String[] args) {
+        String asset;
+        String rest;
+
+        if (sub.equals("coin") || sub.equals("金币")) {
+            asset = "coin";
+            rest = String.join(" ", java.util.Arrays.copyOfRange(args, 1, args.length));
+        } else if (sub.equals("points") || sub.equals("点券")) {
+            asset = "points";
+            rest = String.join(" ", java.util.Arrays.copyOfRange(args, 1, args.length));
+        } else {
+            // give / take 写法：第二个参数是资产种类
+            if (args.length < 4) {
+                s.sendMessage(ChatColor.YELLOW + "用法：/exbridge " + sub + " <coin|points> <玩家> <数额>");
+                return true;
+            }
+            asset = args[1].toLowerCase();
+            rest = args[2] + " " + args[3];
+        }
+
+        if (!asset.equals("coin") && !asset.equals("points")) {
+            s.sendMessage(ChatColor.RED + "未知资产类型「" + asset + "」，只支持 coin 或 points");
+            return true;
+        }
+
+        String[] parts = rest.trim().split("\\s+");
+        if (parts.length < 2) {
+            s.sendMessage(ChatColor.YELLOW + "用法：/exbridge " + asset + " <玩家> <+|-><数额>");
+            return true;
+        }
+
+        String player = parts[0];
+        int delta;
+        try {
+            delta = Integer.parseInt(parts[1]);
+        } catch (NumberFormatException e) {
+            s.sendMessage(ChatColor.RED + "数额必须是整数：" + parts[1]);
+            return true;
+        }
+        if (delta == 0) {
+            s.sendMessage(ChatColor.RED + "数额不能为 0");
+            return true;
+        }
+
+        String reason;
+        if (asset.equals("coin")) {
+            if (!eco.available()) {
+                s.sendMessage(ChatColor.RED + "经济插件不可用：" + eco.lastError());
+                return true;
+            }
+            reason = delta > 0 ? eco.deposit(player, delta) : eco.withdraw(player, -delta);
+        } else {
+            if (pts == null || !pts.available()) {
+                s.sendMessage(ChatColor.RED + "PlayerPoints 不可用："
+                        + (pts == null ? "未初始化" : pts.lastError()));
+                return true;
+            }
+            reason = delta > 0 ? pts.give(player, delta) : pts.take(player, -delta);
+        }
+
+        if (reason == null) {
+            String label = asset.equals("coin") ? "金币" : "点券";
+            s.sendMessage(ChatColor.GREEN + "已给 " + player + " " + label + " "
+                    + (delta > 0 ? "+" : "") + delta);
+        } else {
+            s.sendMessage(ChatColor.RED + "操作失败：" + reason);
+        }
+        return true;
     }
 
     /** 注册命令执行器。必须在 plugin.yml 声明过 commands 后调用，否则 getCommand 返回 null。 */
@@ -218,16 +449,19 @@ public final class ExchangeBridge extends JavaPlugin implements CommandExecutor,
                 + " db" + cfg.redisDatabase
                 + (cfg.redisPassword == null || cfg.redisPassword.isEmpty() ? "（无密码）" : "（有密码）"));
         s.sendMessage(ChatColor.GRAY + " 队列：" + cfg.queueKey + " → " + cfg.resultKey);
+        s.sendMessage(ChatColor.GRAY + " 资产队列：" + cfg.assetQueueKey);
         s.sendMessage(ChatColor.GRAY + " 轮询：" + (worker != null && worker.isRunning() ? "运行中" : "已停止")
                 + "，每 " + cfg.pollIntervalMs + "ms，单批 " + cfg.batchSize + " 条");
 
         // 队列深度：直接读 Redis，不经过 worker
-        long queueLen = -1, resultLen = -1;
+        long queueLen = -1, resultLen = -1, assetLen = -1, eventLen = -1;
         String err = null;
         if (poller != null && poller.pool() != null) {
             try (Jedis j = poller.pool().getResource()) {
                 queueLen = j.llen(cfg.queueKey);
                 resultLen = j.llen(cfg.resultKey);
+                assetLen = j.llen(cfg.assetQueueKey);
+                eventLen = j.llen(cfg.eventQueueKey);
             } catch (Exception e) {
                 err = e.getMessage();
             }
@@ -235,7 +469,14 @@ public final class ExchangeBridge extends JavaPlugin implements CommandExecutor,
         if (err != null) {
             s.sendMessage(ChatColor.RED + " Redis 读取失败：" + err);
         } else {
-            s.sendMessage(ChatColor.GRAY + " 待发放：" + queueLen + " 条    待回传：" + resultLen + " 条");
+            s.sendMessage(ChatColor.GRAY + " 待发放：" + queueLen + " 条    待回传：" + resultLen
+                    + " 条    待执行资产指令：" + assetLen + " 条");
+            s.sendMessage(ChatColor.GRAY + " 待处理回流事件：" + eventLen + " 条");
+            if (eventLen > 20) {
+                s.sendMessage(ChatColor.YELLOW + " ⚠ 回流事件积压 " + eventLen
+                        + " 条 —— 中间件的 consumer 没在跑或已掉线，玩家已扣币但积分未入账，"
+                        + "请检查中间件（/exbridge status 看不出这个，得查中间件日志）");
+            }
             if (resultLen > 20) {
                 s.sendMessage(ChatColor.YELLOW + " ⚠ 回传队列积压 " + resultLen
                         + " 条 —— 皮肤站要有人访问页面才会消费（无 worker），请提醒玩家刷新");
@@ -245,6 +486,21 @@ public final class ExchangeBridge extends JavaPlugin implements CommandExecutor,
         s.sendMessage(ChatColor.GRAY + " 经济插件：" + (eco.available()
                 ? eco.mode().label() + " → " + eco.resolvedClass() + "  " + eco.describeMethods()
                 : ChatColor.RED + "不可用 —— " + eco.lastError()));
+
+        s.sendMessage(ChatColor.GRAY + " 点券插件：" + (pts != null && pts.available()
+                ? pts.describeMethods()
+                : ChatColor.YELLOW + "不可用 —— " + (pts == null ? "未初始化" : pts.lastError())));
+
+        if (assetWorker != null) {
+            s.sendMessage(ChatColor.GRAY + " 资产计数：取到 " + assetWorker.consumedCount()
+                    + "，成功 " + assetWorker.successCount()
+                    + "，失败 " + assetWorker.failedCount()
+                    + "，重复跳过 " + assetWorker.dupCount());
+            String ae = assetWorker.lastError();
+            if (ae != null && !ae.isEmpty()) {
+                s.sendMessage(ChatColor.RED + " 资产最近错误：" + ae);
+            }
+        }
 
         if (worker != null) {
             s.sendMessage(ChatColor.GRAY + " 计数：取到 " + worker.consumedCount()
@@ -257,6 +513,25 @@ public final class ExchangeBridge extends JavaPlugin implements CommandExecutor,
                 s.sendMessage(ChatColor.RED + " 最近错误：" + le);
             }
         }
+
+        // 回流
+        if (!cfg.reflowEnabled) {
+            s.sendMessage(ChatColor.GRAY + " 金币回流：未启用（reflow.enabled=false）");
+        } else if (reflow == null || !reflow.isRunning()) {
+            s.sendMessage(ChatColor.YELLOW + " 金币回流：开关已开但监听未运行 —— 请检查上方启动日志");
+        } else {
+            s.sendMessage(ChatColor.GRAY + " 金币回流：运行中（每 " + cfg.reflowIntervalSec
+                    + " 秒，" + cfg.reflowRatio + ":1，跟踪 " + reflow.trackingCount() + " 人）");
+            s.sendMessage(ChatColor.GRAY + "   扫描 " + reflow.scannedCount()
+                    + " 次，上报 " + reflow.reportedCount()
+                    + "，跳过 " + reflow.skippedCount()
+                    + "，失败 " + reflow.failedCount());
+            if (reflow.failedCount() > 0) {
+                s.sendMessage(ChatColor.YELLOW + "   ⚠ 有失败记录 —— 若原因是「事件入队失败」，"
+                        + "那些玩家已被扣币但没拿到积分，需人工补发（见日志里带 rf: 的 event_id）");
+            }
+        }
+
         if (!eco.available()) {
             s.sendMessage(ChatColor.RED + " 结论：兑换功能当前**不可用**，玩家下单会立刻失败退款");
         }

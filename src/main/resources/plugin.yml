@@ -19,7 +19,7 @@ softdepend:
 commands:
   exbridge:
     description: ExchangeBridge main command
-    usage: /exbridge status|reconnect|balance <player>|reload
+    usage: /exbridge status|reconnect|balance <player>|reload|reflow [scan|on|off]
     aliases: [exb]
     permission: exchangebridge.use
 
@@ -28,7 +28,8 @@ permissions:
   exchangebridge.use:
     description: 查看兑换状态与自己的余额
     default: true
-  # reconnect / reload rebuild the connection and reload config, admin only
+  # reconnect / reload / coin / points / reflow rebuild the connection,
+  # reload config, or modify player assets — admin only
   exchangebridge.admin:
-    description: 重连 Redis 与重载配置
+    description: 重连 Redis、重载配置、修改玩家资产、开关金币回流
     default: op

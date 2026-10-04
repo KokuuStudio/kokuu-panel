@@ -6,6 +6,8 @@ import org.bukkit.entity.Player;
 import org.bukkit.plugin.RegisteredServiceProvider;
 
 import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -78,6 +80,8 @@ public final class EconomyHook {
     // ── Vault 路径的方法签名（Economy 接口）──────────────────────────
     private Method vaultDepositOffline;   // depositPlayer(OfflinePlayer, double) -> EconomyResponse
     private Method vaultDepositName;      // depositPlayer(String, double) -> EconomyResponse
+    private Method vaultWithdrawOffline;  // withdrawPlayer(OfflinePlayer, double) -> EconomyResponse
+    private Method vaultWithdrawName;     // withdrawPlayer(String, double) -> EconomyResponse
     private Method vaultBalanceOffline;   // getBalance(OfflinePlayer) -> double
     private Method vaultHasOffline;       // has(OfflinePlayer, double) -> boolean
     private Method respTransactionSuccess; // EconomyResponse.transactionSuccess() -> boolean
@@ -192,6 +196,8 @@ public final class EconomyHook {
             // （实现类可能桥接/继承，getMethod 也能拿到 public 方法，但接口更明确）
             vaultDepositOffline = tryMethod(ecoIface, "depositPlayer", OfflinePlayer.class, double.class);
             vaultDepositName = tryMethod(ecoIface, "depositPlayer", String.class, double.class);
+            vaultWithdrawOffline = tryMethod(ecoIface, "withdrawPlayer", OfflinePlayer.class, double.class);
+            vaultWithdrawName = tryMethod(ecoIface, "withdrawPlayer", String.class, double.class);
             vaultBalanceOffline = tryMethod(ecoIface, "getBalance", OfflinePlayer.class);
             vaultHasOffline = tryMethod(ecoIface, "has", OfflinePlayer.class, double.class);
 
@@ -208,6 +214,11 @@ public final class EconomyHook {
                 lastError = "Vault 绑到了 " + pc.getName() + "，但它没有 depositPlayer 方法";
                 ecoInstance = null;
                 return false;
+            }
+            // withdrawPlayer 是可选能力：绝大多数后端都有，但万一没有，
+            // 也不能让整个绑定失败 —— 发放（正向）才是主链路，扣减缺失只影响反向。
+            if (vaultWithdrawOffline == null && vaultWithdrawName == null) {
+                lastError = "（提示）Vault 后端没有 withdrawPlayer，扣币功能不可用";
             }
 
             ecoInstance = provider;
@@ -270,6 +281,8 @@ public final class EconomyHook {
         if (mode == Mode.VAULT) {
             return "Vault depositPlayer(OfflinePlayer)=" + (vaultDepositOffline != null)
                     + " depositPlayer(String)=" + (vaultDepositName != null)
+                    + " withdrawPlayer(OfflinePlayer)=" + (vaultWithdrawOffline != null)
+                    + " withdrawPlayer(String)=" + (vaultWithdrawName != null)
                     + " has=" + (vaultHasOffline != null);
         }
         return "deposit(Player)=" + (depositPlayer != null)
@@ -308,9 +321,121 @@ public final class EconomyHook {
         return depositViaSingleton(playerName, offline, amount);
     }
 
-    /** 路径 A：走 Vault Economy API */
-    private String depositViaVault(String playerName, OfflinePlayer offline, double amount) {
+    /**
+     * 从玩家账户扣钱（反向链路：金币换积分时用）。
+     *
+     * <p>★ 与 {@link #deposit} 的关键差别：**必须先查余额**。
+     * Vault 的 withdrawPlayer 在余额不足时会让 EconomyResponse
+     * 携带 failure，我们靠 checkResponse 拦。但某些后端（如配置异常的自定义经济）
+     * 可能返回 success=true 却把余额扣成负数 —— 所以这里额外做一次余额预检，
+     * 双保险。宁可「明明有钱却提示不足」让玩家重试，也不能把余额扣成负数。
+     *
+     * @return null 表示成功；非 null 为失败原因
+     */
+    public String withdraw(String playerName, int units) {
+        if (!available()) {
+            return "服务器未启用经济插件，无法扣减：" + lastError;
+        }
+        if (units <= 0) {
+            return "扣减数量非法：" + units;
+        }
+
+        OfflinePlayer offline = resolveOffline(playerName);
+        if (offline == null) {
+            return "找不到叫「" + playerName + "」的玩家（可能从未上线过）";
+        }
+
+        double amount = units;
+
+        if (mode == Mode.VAULT) {
+            if (vaultWithdrawOffline == null && vaultWithdrawName == null) {
+                return "经济插件版本不兼容：Vault 接口没有 withdrawPlayer";
+            }
+            // 预检余额
+            String pre = precheckBalance(offline, amount);
+            if (pre != null) return pre;
+
+            try {
+                Object resp;
+                if (vaultWithdrawOffline != null) {
+                    resp = vaultWithdrawOffline.invoke(ecoInstance, offline, amount);
+                } else {
+                    resp = vaultWithdrawName.invoke(ecoInstance, playerName, amount);
+                }
+                String err = checkResponse(resp);
+                if (err != null) return err;
+                return null;
+            } catch (Exception e) {
+                Throwable cause = e.getCause() != null ? e.getCause() : e;
+                return "扣减失败：" + cause.getClass().getSimpleName()
+                        + (cause.getMessage() == null ? "" : " — " + truncate(cause.getMessage(), 140));
+            }
+        }
+
+        // 静态单例路径：没有 withdraw 就用 take/remove，名字各家不同，都试一遍
+        return withdrawViaSingleton(playerName, offline, amount);
+    }
+
+    /** 扣钱前的余额预检，两条路径共用。 */
+    private String precheckBalance(OfflinePlayer offline, double amount) {
+        if (mode != Mode.VAULT || vaultBalanceOffline == null) return null;
         try {
+            double bal = ((Number) vaultBalanceOffline.invoke(ecoInstance, offline)).doubleValue();
+            if (bal + 1e-6 < amount) {
+                return "余额不足：当前 " + trim(bal) + "，需要 " + trim(amount);
+            }
+        } catch (Throwable ignored) {
+            // 查不到余额就不拦，交给 withdrawPlayer 自己的响应判断
+        }
+        return null;
+    }
+
+    private static String trim(double d) {
+        if (d == Math.floor(d) && !Double.isInfinite(d)) return String.valueOf((long) d);
+        return String.valueOf(d);
+    }
+
+    /**
+     * 静态单例路径的扣钱。
+     * 各家经济插件的方法名不统一：withdraw / take / remove 都试。
+     */
+    private String withdrawViaSingleton(String playerName, OfflinePlayer offline, double amount) {
+        String[][] candidates = {
+                {"withdraw", "Player"}, {"take", "Player"}, {"remove", "Player"},
+                {"withdraw", "OfflinePlayer"}, {"take", "OfflinePlayer"},
+                {"withdraw", "String"}, {"take", "String"},
+        };
+        Class<?>[] types = {Player.class, OfflinePlayer.class, String.class};
+        List<String> tried = new ArrayList<>();
+
+        for (String[] c : candidates) {
+            Class<?> idType = "Player".equals(c[1]) ? Player.class
+                    : "OfflinePlayer".equals(c[1]) ? OfflinePlayer.class : String.class;
+            Method m = tryMethod(ecoInstance.getClass(), c[0], idType, double.class);
+            if (m == null) { tried.add(c[0] + "(" + c[1] + ")"); continue; }
+
+            try {
+                Object arg;
+                if (idType == String.class) arg = playerName;
+                else if (idType == OfflinePlayer.class) arg = offline;
+                else {
+                    Player on = offline.getPlayer();
+                    if (on == null) { tried.add(c[0] + "(Player, 玩家不在线)"); continue; }
+                    arg = on;
+                }
+                m.invoke(ecoInstance, arg, amount);
+                return null;
+            } catch (Throwable e) {
+                Throwable cause = e.getCause() != null ? e.getCause() : e;
+                tried.add(c[0] + "(" + c[1] + ") → " + cause.getClass().getSimpleName());
+            }
+        }
+        return "经济插件没有可用的扣减方法（试过 " + String.join("、", tried) + "）。"
+                + "如果它走 Vault，请确认 Vault 已安装。";
+    }
+
+    /** 路径 A：走 Vault Economy API */
+    private String depositViaVault(String playerName, OfflinePlayer offline, double amount) {        try {
             Object resp;
             if (vaultDepositOffline != null) {
                 resp = vaultDepositOffline.invoke(ecoInstance, offline, amount);
@@ -410,6 +535,36 @@ public final class EconomyHook {
             if (p == null) return null;
             return String.valueOf(getBalance.invoke(ecoInstance, p));
         } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * 查余额（double），给需要做数值运算的调用方用。
+     *
+     * <p>与 {@link #balance(String)} 的区别：那个返回 String 是给人看的，
+     * 这个返回 {@code Double} 是给 {@link EarningsWatcher} 算增量用的。
+     * 查不到返回 {@code null}（区别于「余额真的是 0」）。
+     *
+     * <p>★ 必须在主线程调用：内部会 {@code resolveOffline} →
+     *   {@code Bukkit.getOfflinePlayer(String)}，那是 Bukkit 状态。
+     */
+    public Double balanceOf(String playerName) {
+        if (!available()) return null;
+        try {
+            if (mode == Mode.VAULT) {
+                if (vaultBalanceOffline == null) return null;
+                OfflinePlayer off = resolveOffline(playerName);
+                if (off == null) return null;
+                Object v = vaultBalanceOffline.invoke(ecoInstance, off);
+                return (v instanceof Number) ? ((Number) v).doubleValue() : null;
+            }
+            if (getBalance == null) return null;
+            Player p = Bukkit.getPlayerExact(playerName);
+            if (p == null) return null;
+            Object v = getBalance.invoke(ecoInstance, p);
+            return (v instanceof Number) ? ((Number) v).doubleValue() : null;
+        } catch (Throwable e) {
             return null;
         }
     }

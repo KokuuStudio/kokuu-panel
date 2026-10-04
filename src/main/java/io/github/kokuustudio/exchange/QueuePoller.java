@@ -8,6 +8,7 @@ import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPoolConfig;
 import redis.clients.jedis.exceptions.JedisException;
+import redis.clients.jedis.util.KeyValue;
 
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -27,15 +28,17 @@ public final class QueuePoller {
     private final JavaPlugin plugin;
     private final BridgeConfig cfg;
     private final ExchangeWorker worker;
+    private final AssetWorker assetWorker;
 
     private final AtomicBoolean stop = new AtomicBoolean(false);
     private Thread thread;
     private volatile JedisPool pool;
 
-    public QueuePoller(JavaPlugin plugin, BridgeConfig cfg, ExchangeWorker worker) {
+    public QueuePoller(JavaPlugin plugin, BridgeConfig cfg, ExchangeWorker worker, AssetWorker assetWorker) {
         this.plugin = plugin;
         this.cfg = cfg;
         this.worker = worker;
+        this.assetWorker = assetWorker;
     }
 
     public JedisPool pool() { return pool; }
@@ -90,7 +93,7 @@ public final class QueuePoller {
 
                 int handled = 0;
                 while (handled < cfg.batchSize && !stop.get()) {
-                    boolean got = worker.pollOnce(pool);
+                    boolean got = pollOnce();
                     if (!got) break;
                     handled++;
                 }
@@ -112,6 +115,41 @@ public final class QueuePoller {
             }
         }
         closePool();
+    }
+
+    /**
+     * 阻塞等待任意一个队列有消息，然后交给对应的 worker 处理。
+     *
+     * <p>★ 为什么用 brpop 的**多键重载**而不是依次 poll 两个队列：
+     * <pre>
+     *   brpop(double seconds, String... keys) → KeyValue&lt;String,String&gt;
+     * </pre>
+     * 一次 BRPOP 同时监听兑换队列与资产队列，谁先来就取谁，
+     * 再用 {@code getKey()} 判断命中的是哪个队列、分发给谁处理。
+     *
+     * <p>若改成「先 poll 兑换队列（阻塞 N 秒）→ 再 poll 资产队列（阻塞 N 秒）」，
+     * 资产指令的响应时间会凭空多出最多 N 秒 —— 两个队列互相拖慢。
+     *
+     * <p>⚠️ 重载选择的坑（与 ExchangeWorker 里记的是同一个）：
+     * 传 int 字面量会精确匹配到返回 {@code List<String>} 的那个重载，编译直接失败。
+     * 必须传 double，且用 KeyValue 接。
+     *
+     * @return true 表示取到过消息；false 表示两个队列都空
+     */
+    private boolean pollOnce() throws JedisException {
+        KeyValue<String, String> kv;
+        try (Jedis jedis = pool.getResource()) {
+            kv = jedis.brpop((double) cfg.blockTimeoutSec, cfg.queueKey, cfg.assetQueueKey);
+        }
+        if (kv == null) return false;
+
+        String from = kv.getKey();
+        String raw = kv.getValue();
+
+        if (cfg.assetQueueKey.equals(from)) {
+            return assetWorker != null && assetWorker.handle(raw);
+        }
+        return worker.pollOnce(pool);
     }
 
     /**

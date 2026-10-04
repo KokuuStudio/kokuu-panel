@@ -28,6 +28,47 @@ public final class BridgeConfig {
     public String resultKey = "bs:exchange:result";
 
     /**
+     * 资产指令队列（中间件 → 插件）。
+     *
+     * <p>与上面两个兑换队列**必须分开**：那对队列的消息格式是订单 JSON，
+     * 这里的消息格式是 {event_id, player, uuid, asset, delta, note}。
+     * 共用一个键会导致解析错乱、且坏消息会互相污染。
+     *
+     * <p>uuid 可能为空（老版本中间件不带），此时插件退化为按名字执行；
+     * 非空时会做在线身份核对，防止重名时发错人。
+     */
+    public String assetQueueKey = "bs:asset:cmd";
+
+    /**
+     * 事件队列（插件 → 中间件）。
+     *
+     * <p>消息格式与上面两个队列都不同，这里是
+     * {@code {event_id, player, uuid, asset, delta, credit, balance_after, ts}}。
+     * 当前唯一的生产者是 {@link EarningsWatcher}（金币回流）。
+     */
+    public String eventQueueKey = "bs:asset:event";
+
+    /**
+     * 金币自动回流的「金币 : 积分」比例。
+     *
+     * <p>★ 为什么比例在插件侧而不是中间件侧：扣币必须在插件这里发生
+     * （只有插件能操作经济插件），所以「扣多少币换多少积分」这个算式
+     * 必须在同一处完成。两边各算一半、比例一旦漂移就等于凭空造币或吞钱。
+     *
+     * <p>中间件侧保留独立的限额开关作安全阀，但不再重算比例。
+     */
+    public int reflowRatio = 1000;
+
+    /** 回流总开关。默认关 —— 开箱即用就自动扣玩家金币是危险行为。 */
+    public boolean reflowEnabled = false;
+    /** 扫描间隔（秒）。最小 1。 */
+    public int reflowIntervalSec = 30;
+    /** 单次增量低于这个值不抽 —— 滤掉零花钱式的小额进账。 */
+    public long reflowMinDelta = 1000L;
+    /** 单次增量上限。超过按此值截断，防止管理员一次大额下发被误判成「赚到的」。 */
+    public long reflowMaxDelta = 10000000L;
+
+    /**
      * 静态单例路径的候选全限定名，按顺序尝试。
      * <p>★ 首选路径其实是 <b>Vault API</b>（见 {@link EconomyHook}），
      * 这份列表只是回退 —— 覆盖 CMI 新旧包名（历史兼容）。
@@ -74,6 +115,14 @@ public final class BridgeConfig {
 
         cfg.queueKey = c.getString("queue.key", cfg.queueKey);
         cfg.resultKey = c.getString("queue.result-key", cfg.resultKey);
+        cfg.assetQueueKey = c.getString("queue.asset-key", cfg.assetQueueKey);
+        cfg.eventQueueKey = c.getString("queue.event-key", cfg.eventQueueKey);
+
+        cfg.reflowEnabled = c.getBoolean("reflow.enabled", cfg.reflowEnabled);
+        cfg.reflowRatio = c.getInt("reflow.ratio", cfg.reflowRatio);
+        cfg.reflowIntervalSec = c.getInt("reflow.interval-seconds", cfg.reflowIntervalSec);
+        cfg.reflowMinDelta = c.getLong("reflow.min-delta", cfg.reflowMinDelta);
+        cfg.reflowMaxDelta = c.getLong("reflow.max-delta", cfg.reflowMaxDelta);
 
         // 读成列表：用户在 config.yml 里写 economy.class-names: [ 'a.B', 'c.D' ]
         if (c.isList("economy.class-names")) {
@@ -108,6 +157,27 @@ public final class BridgeConfig {
             // 两个键相同会互相吃掉：MC 端从队列取出的消息，
             // 回传时又 LPUSH 进同一个键，下一轮立刻被自己取回来 —— 死循环。
             out.add("queue.key 与 queue.result-key 相同，会造成消息自我循环");
+        }
+        if (assetQueueKey.equals(queueKey) || assetQueueKey.equals(resultKey)) {
+            // 消息格式不同，共用键会导致坏消息互相污染
+            out.add("queue.asset-key 必须与另外两个队列键不同（消息格式不同，不能共用）");
+        }
+        if (eventQueueKey.equals(queueKey) || eventQueueKey.equals(resultKey)
+                || eventQueueKey.equals(assetQueueKey)) {
+            out.add("queue.event-key 必须与另外三个队列键不同（消息格式不同，不能共用）");
+        }
+        if (reflowEnabled) {
+            if (reflowRatio <= 0) out.add("reflow.ratio 必须 >=1");
+            if (reflowIntervalSec < 1) out.add("reflow.interval-seconds 必须 >=1（秒）");
+            if (reflowMinDelta < 1) out.add("reflow.min-delta 必须 >=1（金币）");
+            if (reflowMaxDelta < reflowMinDelta) {
+                out.add("reflow.max-delta 必须 >= reflow.min-delta（上限低于下限会让每次扫描都被截断）");
+            }
+            if (reflowMinDelta < reflowRatio) {
+                // 不是错误，但按公式 credit = floor(delta / ratio)，低于 ratio 永远抽不出积分
+                out.add("提示：reflow.min-delta（" + reflowMinDelta + "）小于 reflow.ratio（"
+                        + reflowRatio + "），低于该值的增量永远换不出积分，建议调大");
+            }
         }
         if (economyClassNames.isEmpty()) {
             out.add("economy.class-names 为空 —— 不知道该连哪个经济插件，无法发放");
