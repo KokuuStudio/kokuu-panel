@@ -63,6 +63,39 @@ docker compose logs -f app      # 看启动日志
 
 打开 <http://127.0.0.1:8787>，用 `ADMIN_TOKEN` 登录。
 
+#### 首次启动前：给数据卷准备属主（重要）
+
+容器以非 root 的 `node`（uid 1000）运行，账本写在 `/data`。
+**新创建的 Docker 卷默认属主是 root**，于是容器启动时会：
+
+```
+[ledger] EACCES: permission denied, mkdir '/data'
+```
+
+容器显示 `Up` 但页面打不开、`docker logs` 里只有这一条权限错误
+—— 很容易误判成端口或健康检查问题。
+
+最省事的做法是**先让 compose 把卷建出来，再改属主，最后重启**：
+
+```bash
+docker compose up -d          # 第一次会失败，但卷已经建好了
+docker compose logs app | tail -5   # 确认确实是 EACCES
+
+# 卷全名带项目名前缀，先查出来再用
+VOL=$(docker volume ls -q | grep kokuu-data)
+echo "$VOL"                # 核对一下，别改错卷
+docker run --rm -v "$VOL":/data alpine chown -R 1000:1000 /data
+
+docker compose restart app
+docker compose logs -f app # 这次应该出现「监听 http://0.0.0.0:8787」
+```
+
+> 两份 compose 的数据卷都叫 `kokuu-data`，在同一个项目目录下只会有一份。
+> 上面 `grep kokuu-data` 而不是写死全名，就是因为卷名前缀取决于
+> 你的目录名和 `-p` 参数 —— 写死会在改名目录后静默指到不存在的卷。
+
+**已经有数据了怎么办**：不用删卷，`chown -R` 就地改属主即可（见上）。
+
 ### 1.5 反向代理 + TLS
 
 ```bash

@@ -20,6 +20,25 @@ import { loadEnv } from './env.js';
 
 const env = loadEnv();
 
+/**
+ * 给 Promise 加超时。
+ *
+ * 注意**不取消**底层 promise —— ioredis 的命令一旦发出就收不回来，
+ * 这里只是不等它了。超时本身不影响正确性：
+ * depths() 的语义是「诊断信息」，拿不到就返回 -1。
+ */
+function withTimeout(promise, ms, message) {
+  let timer;
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), ms);
+      // 别因为这个定时器把进程吊住
+      if (timer.unref) timer.unref();
+    }),
+  ]);
+}
+
 export class Queue {
   /**
    * @param {object} o
@@ -57,9 +76,18 @@ export class Queue {
     return this.client;
   }
 
-  async ping() {
+  /**
+   * 连通性探测。
+   *
+   * ★ 同样必须短超时：这是**启动路径**上的第一个 Redis 调用，
+   *   Redis 不可用时若无节制地等重连，服务启动会被拖住十几秒，
+   *   表现为「docker 起来了一直不 ready」——
+   *   实际上只是没人给它配 Redis，功能其余部分都正常。
+   */
+  async ping(timeoutMs = 1500) {
     try {
-      const r = await this.connect().ping();
+      const r = await withTimeout(
+        this.connect().ping(), timeoutMs, 'Redis 探测超时');
       return r === 'PONG';
     } catch (e) {
       this.lastError = e.message;
@@ -96,14 +124,29 @@ export class Queue {
     }
   }
 
-  /** 各队列深度，供诊断。 */
-  async depths() {
+  /**
+   * 各队列深度，供诊断。
+   *
+   * ★ 这里必须自带短超时，不能直接 await 连接上的命令：
+   *   Redis 不可用时，ioredis 会按 retryStrategy 一轮轮重连，
+   *   而**每一次命令都要排在这个队列后面**。实测冷启动连不上的耗时：
+   *     第 1 次   1519ms
+   *     第 2 次   6022ms
+   *     第 3 次  10529ms  ← 已经超过前端 HTTP 客户端的常规超时
+   *   而 /stats 与 /reflow/status 都会调 depths()，
+   *   于是 Redis 一挂，**整个管理台页面跟着卡死十几秒** ——
+   *   排查时看到的是「接口偶尔超时」，很难联想到是队列查询在等重连。
+   *
+   *   这里用 withTimeout 包一层：Redis 不可用时快速返回 -1。
+   *   -1 本身就是既有语义（未知深度），调用方无需改。
+   */
+  async depths(timeoutMs = 1500) {
     try {
       const c = this.connect();
-      const [asset, event] = await Promise.all([
+      const [asset, event] = await withTimeout(Promise.all([
         c.llen(this.opts.assetKey),
         c.llen(this.opts.eventKey),
-      ]);
+      ]), timeoutMs, 'Redis 队列深度查询超时（Redis 可能不可用）');
       return { asset, event, error: '' };
     } catch (e) {
       return { asset: -1, event: -1, error: e.message };

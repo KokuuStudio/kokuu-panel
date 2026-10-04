@@ -39,14 +39,18 @@ WORKDIR /app/server
 # ★ tini 负责转发信号与回收僵尸进程 —— 没有它，Ctrl+C / docker stop
 #   收不到 SIGTERM，进程被强杀，正在写的账本流水会丢半条。
 #
-# ★ 数据目录必须在这里预建并授权，不能只靠运行时的 mkdir。
+# ★ 数据目录必须预建并授权，不能只靠运行时的 mkdir。
 #   账本落在 $DATA_DIR（默认 /data，compose 与文档都用这个路径），
 #   而 / 的属主是 root —— 以 USER node（uid 1000）运行时
 #   mkdir /data 会直接 EACCES 抛异常，进程启动即崩。
-#   症状是「容器起来了但 /api/ping 永远无响应」：
-#   docker ps 显示 Up，docker logs 里只有一条权限错误 ——
+#   症状极具误导性：容器显示 Up，但 /api/ping 永远无响应，
 #   很容易误判成端口或健康检查的问题。
-#   node 用户已存在（node:alpine 自带），这里只需 chown。
+#
+#   ⚠️ 但这**还不够**：Dockerfile 里声明 VOLUME /data 后，
+#   `docker run` 会自动建一个匿名卷挂上去，
+#   而**卷挂载会遮蔽镜像内的属主** —— 上面 chown 的结果等于白做。
+#   所以用 named volume 的场景必须在首次创建时指定属主，
+#   两条路径见 INSTALL.md；compose 里已用 kokuu-data 并处理好。
 RUN apk add --no-cache tini \
  && mkdir -p /data \
  && chown -R node:node /data

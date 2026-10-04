@@ -280,22 +280,62 @@ jobs:
 
       - name: 冒烟：容器能起来且 /api/ping 有响应
         run: |
+          # ★ 显式建一个属主匹配的 named volume，而不是让 docker run
+          #   自动挂匿名卷。原因是 VOLUME 声明的 /data 在 run 时会被
+          #   匿名卷**遮蔽**，镜像里 chown 过的属主等于白做 ——
+          #   而 node 用户（uid 1000）在空卷里没有写权限，
+          #   mkdir 抛 EACCES，进程启动即崩，/api/ping 永远无响应。
+          #   这也是 INSTALL.md 里要求首次创建卷时指定属主的原因。
+          docker volume create kk-data
+          docker run --rm -v kk-data:/data alpine:3 \
+            chown 1000:1000 /data
+          docker volume rm kk-data
+          docker volume create kk-data
+
           docker run -d --name kk -p 8787:8787 \
+            -v kk-data:/data \
             -e BACKEND=standalone -e ADMIN_TOKEN=ci-token \
             -e DATA_DIR=/data -e SERVE_WEB=1 kokuu-credit-admin:ci
-          for i in $(seq 1 30); do
+
+          # 30 秒不够反映真实情况：Redis 探测 + 静态资源加载都要时间，
+          # 但也不能太长 —— 失败时要尽快拿到日志。
+          ok=
+          for i in $(seq 1 45); do
             if curl -sf http://127.0.0.1:8787/api/ping >/dev/null; then ok=1; break; fi
+            # 进程退出就别空等了，直接把日志打出来
+            if ! docker inspect -f '{{.State.Running}}' kk 2>/dev/null | grep -q true; then
+              echo "::error::容器已退出，日志如下："
+              docker logs kk 2>&1 | tail -30
+              docker rm -f kk 2>/dev/null || true
+              docker volume rm kk-data 2>/dev/null || true
+              exit 1
+            fi
             sleep 1
           done
           if [ -z "$ok" ]; then
-            echo "::error::容器起来但 /api/ping 无响应"
-            docker logs kk
+            echo "::error::容器起来但 /api/ping 无响应，日志如下："
+            docker logs kk 2>&1 | tail -30
+            # 连静态资源都取不到时，多半是 SERVE_WEB 的产物路径不对
+            docker exec kk ls -la /app/web/dist 2>&1 | head -5 || true
+            docker rm -f kk 2>/dev/null || true
+            docker volume rm kk-data 2>/dev/null || true
             exit 1
           fi
           curl -s http://127.0.0.1:8787/api/ping
           echo
+          # 顺带确认前端产物真的伺服出去了 —— 只测 /api/ping 会漏掉
+          # 「接口正常但页面 404」这类问题，而那恰好是用户最先遇到的。
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/)
+          echo "首页 HTTP $code"
+          if [ "$code" != "200" ]; then
+            echo "::error::首页返回 $code，SERVE_WEB 静态伺服可能有问题"
+            docker rm -f kk 2>/dev/null || true
+            docker volume rm kk-data 2>/dev/null || true
+            exit 1
+          fi
           docker logs kk 2>&1 | tail -20
           docker rm -f kk
+          docker volume rm kk-data
 
   # ── compose 文件语法 ───────────────────────────────────
   compose-lint:
