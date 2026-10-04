@@ -1,0 +1,17 @@
+# 构建产物与依赖
+node_modules/
+dist/
+
+# ★ .env 一定要忽略：里面有 ADMIN_TOKEN 和数据库口令。
+#   .env.example 是模板（无敏感值），必须提交。
+.env
+.env.remote
+server/.env
+ops/token.txt
+
+# 运行时数据
+data/
+data-test/
+.shots/
+*.log
+.DS_Store

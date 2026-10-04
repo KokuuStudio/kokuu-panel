@@ -1,0 +1,140 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  # ── 接口测试（standalone）───────────────────────────────
+  # 不依赖 MySQL：独立模式的账本是 JSONL，起一个 node 进程就够。
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: 安装依赖
+        working-directory: server
+        run: npm ci
+
+      - name: 起后端（standalone）
+        working-directory: server
+        env:
+          BACKEND: standalone
+          DATA_DIR: ./data-test
+          PORT: '8799'
+          HOST: 127.0.0.1
+          SERVE_WEB: '0'
+          ADMIN_TOKEN: testtoken123
+          # Redis 不在 CI 里起：接口测试只碰 HTTP 层，
+          # 回流走 /reflow/simulate 直接调 handle()，绕开了队列。
+          REDIS_HOST: 127.0.0.1
+          REDIS_PORT: 6379
+        run: |
+          node src/index.js &
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8799/api/ping >/dev/null; then break; fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8799/api/ping || { echo "后端没起来"; exit 1; }
+          node src/apitest.mjs   http://127.0.0.1:8799 testtoken123
+          node src/reflowtest.mjs http://127.0.0.1:8799 testtoken123
+
+  # ── 插件编译（Java 8 字节码）───────────────────────────
+  # ★ 单独检查字节码版本：
+  #   1.12.2 跑在 Java 8 上，编译成 17 的字节码会让老服务端直接
+  #   "UnsupportedClassVersionError"，而且只在 1.12.2 上炸 ——
+  #   开发用的是新 JDK，不检查就会漏过去。
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      # ★ 插件是**独立仓库**（KokuuStudio/exchange-bridge），不是本仓库的子目录。
+      #   之前写成 actions/checkout + path: exchange-bridge 会把本仓库
+      #   再拉一遍到子目录里 —— 那里根本没有 Java 源码，mvn 会直接失败。
+      - name: 拉取插件仓库
+        uses: actions/checkout@v4
+        with:
+          repository: KokuuStudio/exchange-bridge
+          path: exchange-bridge
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: exchange-bridge/pom.xml
+
+      - name: 编译并打包
+        working-directory: exchange-bridge
+        run: mvn -B -q package -DskipTests
+
+      - name: 校验字节码为 Java 8（major 52）
+        working-directory: exchange-bridge
+        run: |
+          JAR=$(ls target/*.jar | grep -v sources | head -1)
+          echo "检查 $JAR"
+          unzip -o -q "$JAR" -d target/classes-check
+          CLS=$(find target/classes-check -name '*.class' | head -1)
+          MAJOR=$(javap -v "$CLS" | grep 'major version' | awk '{print $3}')
+          echo "major version = $MAJOR"
+          if [ "$MAJOR" != "52" ]; then
+            echo "::error::字节码是 major $MAJOR，必须是 52（Java 8）—— 1.12.2 会加载失败"
+            exit 1
+          fi
+
+  # ── 镜像构建 ───────────────────────────────────────────
+  # ★ 有了这一步，「Dockerfile 能不能构建」在 PR 上就能验证，
+  #   而不是等部署到服务器才发现 COPY 路径写错。
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 构建镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: kokuu-credit-admin:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 冒烟：容器能起来且 /api/ping 有响应
+        run: |
+          docker run -d --name kk -p 8787:8787 \
+            -e BACKEND=standalone -e ADMIN_TOKEN=ci-token \
+            -e DATA_DIR=/data -e SERVE_WEB=1 kokuu-credit-admin:ci
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8787/api/ping >/dev/null; then ok=1; break; fi
+            sleep 1
+          done
+          if [ -z "$ok" ]; then
+            echo "::error::容器起来但 /api/ping 无响应"
+            docker logs kk
+            exit 1
+          fi
+          curl -s http://127.0.0.1:8787/api/ping
+          echo
+          docker logs kk 2>&1 | tail -20
+          docker rm -f kk
+
+  # ── compose 文件语法 ───────────────────────────────────
+  compose-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 两份 compose 都要能解析
+        run: |
+          docker compose -f docker-compose.yml config -q
+          docker compose -f docker-compose.skin.yml config -q
+          echo "compose 语法 OK"

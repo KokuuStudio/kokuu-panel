@@ -1,0 +1,8 @@
+# 统一行尾：仓库内存 LF，检出时按平台自动转换。
+# 不加这条，Windows 的 CRLF 会让每个文件都显示为已修改，
+# 真正的改动被噪音淹没（判断真实差异要用 diff -q <(tr -d '\r' < a) <(tr -d '\r' < b)）。
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jar binary

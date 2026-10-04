@@ -1,0 +1,75 @@
+# ══════════════════════════════════════════════════════════════
+#  kokuu-credit-admin —— 皮肤站模式
+# ══════════════════════════════════════════════════════════════
+#
+#  连已有的 Blessing Skin 站。本文件**不含 mysql / redis 服务**：
+#  数据在皮肤站的库里，Redis 也用皮肤站那台。
+#  这不是偷懒 —— 两个 MySQL 各看各的库，起容器那份只会让
+#  「连上了但全是空表」变成最难查的一种故障。
+#
+#  用法：
+#     cp .env.example .env
+#     编辑 .env：BACKEND=skin，填 DB_* / REDIS_*
+#     docker compose -f docker-compose.skin.yml up -d
+#
+#  ⚠️ 前置条件：
+#     1. 网络可达：皮肤站不在同一台机器时，用 host 网络或加进同一 network。
+#        跨机优先走 SSH 隧道，不要把 Redis 直接暴露到公网。
+#     2. 皮肤站的 MySQL 账号要能建表（bridge_config / bridge_exchange /
+#        bridge_identity 三个表由本服务自动创建，幂等）。
+#     3. ★ 队列键名前缀：皮肤站用 Laravel Redis 门面会给键加
+#        blessing_skin_database_ 前缀，而本服务与 MC 插件用裸客户端、
+#        键名是字面量。所以 REDIS_*_KEY 要填**插件实际使用的键名**。
+# ══════════════════════════════════════════════════════════════
+
+name: kokuu-credit-admin
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: kokuu-credit-admin:1.0.0
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      BACKEND: skin
+
+      # ── 皮肤站的库 ────────────────────────────────────────
+      # host.docker.internal 用于「皮肤站跑在宿主机上」这个最常见的场景。
+      # 皮肤站在别的机器上时改成那台机器的内网地址。
+      DB_HOST: ${DB_HOST:-host.docker.internal}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_DATABASE: ${DB_DATABASE:-kokuu}
+      DB_USERNAME: ${DB_USERNAME:-kokuu}
+      DB_PASSWORD: ${DB_PASSWORD:?皮肤站数据库密码必须填}
+
+      # ── 皮肤站的 Redis ────────────────────────────────────
+      REDIS_HOST: ${REDIS_HOST:-host.docker.internal}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_DB: ${REDIS_DB:-0}
+      REDIS_ASSET_KEY: ${REDIS_ASSET_KEY:-bs:asset:cmd}
+      REDIS_EVENT_KEY: ${REDIS_EVENT_KEY:-bs:asset:event}
+
+      DATA_DIR: /data
+      HOST: 0.0.0.0
+      PORT: "8787"
+      SERVE_WEB: "1"
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${BIND_PORT:-8787}:8787"
+    volumes:
+      # 皮肤站模式下这里只有配置快照，账本在皮肤站的库里。
+      - kokuu-data:/data
+    extra_hosts:
+      # 让容器内的 host.docker.internal 指向宿主机（Linux 版 Docker 需要显式声明，
+      # Windows/Mac 的 Docker Desktop 默认已解析好，但写了也无害）
+      - "host.docker.internal:host-gateway"
+    networks: [kokuu]
+
+networks:
+  kokuu:
+    driver: bridge
+
+volumes:
+  kokuu-data:

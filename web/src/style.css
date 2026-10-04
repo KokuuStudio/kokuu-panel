@@ -1,0 +1,201 @@
+:root {
+  --kk-bg: #0f1216;
+  --kk-panel: #171b21;
+  --kk-line: #262c35;
+  --kk-text: #e6eaf0;
+  --kk-dim: #8b95a5;
+  --kk-accent: #4fd1c5;
+  --kk-up: #f56c6c;   /* 涨=红 */
+  --kk-down: #67c23a; /* 跌=绿 */
+}
+
+* { box-sizing: border-box; }
+
+html, body, #app { height: 100%; margin: 0; }
+
+body {
+  background: var(--kk-bg);
+  color: var(--kk-text);
+  font-family: "Inter", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+.up { color: var(--kk-up); }
+.down { color: var(--kk-down); }
+.dim { color: var(--kk-dim); }
+
+/* Element Plus 深色适配。
+   坑 1：--el-table-tr-bg-color 只管普通行，斑马纹行走的是
+   tr.el-table__row--striped 自己的 background。
+   坑 2：EP 原生选择器是 `.el-table .el-table__body tr...striped td...`，
+   比我们写的多一个类，特异性更高 —— 覆盖时必须把 .el-table__body 也带上，
+   否则深色主题下会顽固地留一行白底黑字。 */
+.el-table {
+  --el-table-bg-color: var(--kk-panel);
+  --el-table-tr-bg-color: var(--kk-panel);
+  --el-table-header-bg-color: #1d222a;
+  --el-table-border-color: var(--kk-line);
+  --el-table-text-color: var(--kk-text);
+  --el-table-header-text-color: var(--kk-dim);
+  --el-table-row-hover-bg-color: #1f252e;
+  --el-fill-color-lighter: #14181e;
+}
+.el-table .el-table__body tr.el-table__row--striped td.el-table__cell {
+  background-color: #14181e;
+  color: var(--kk-text);
+}
+.el-table .el-table__body tr.el-table__row--striped:hover > td.el-table__cell {
+  background-color: #1f252e;
+}
+.el-table .el-table__body tr:not(.el-table__row--striped) td.el-table__cell,
+.el-table .el-table__body tr td.el-table__cell {
+  background-color: var(--kk-panel);
+  color: var(--kk-text);
+}
+.el-table .el-table__body tr:hover > td.el-table__cell { background-color: #1f252e; }
+.el-table td.el-table__cell,
+.el-table th.el-table__cell { border-color: var(--kk-line); }
+.el-table .cell { color: inherit; }
+.el-pagination { --el-pagination-bg-color: #1d222a; --el-pagination-text-color: var(--kk-dim); }
+.el-pagination button, .el-pagination .el-pager li {
+  background: #1d222a; color: var(--kk-text); border-color: var(--kk-line);
+}
+.el-pagination .el-pager li.is-active { background: var(--kk-accent); color: #06231f; }
+.el-tag--info { --el-tag-bg-color: #232a33; --el-tag-border-color: #313a46; --el-tag-text-color: #a9b4c2; }
+
+/* 弹窗 / 抽屉 / 消息 / 确认框：这些是 teleport 到 body 的浮层，
+   不受 .shell 作用域影响，必须单独给暗色。EP 的浮层用的是
+   --el-bg-color / --el-text-color-primary 这类全局变量。 */
+.el-overlay { background-color: rgba(0, 0, 0, .6); }
+.el-dialog {
+  --el-dialog-bg-color: var(--kk-panel);
+  background: var(--kk-panel);
+  border: 1px solid var(--kk-line);
+}
+.el-dialog__title, .el-dialog__body, .el-dialog__footer { color: var(--kk-text); }
+.el-dialog__headerbtn .el-dialog__close { color: var(--kk-dim); }
+.el-dialog__headerbtn:hover .el-dialog__close { color: var(--kk-text); }
+
+.el-drawer {
+  --el-drawer-bg-color: var(--kk-bg);
+  background: var(--kk-bg);
+}
+.el-drawer__header { color: var(--kk-text); margin-bottom: 12px; }
+.el-drawer__body { color: var(--kk-text); }
+
+.el-message { background: #1d222a; border-color: var(--kk-line); }
+.el-message .el-message__content { color: var(--kk-text) !important; }
+
+.el-message-box {
+  --el-bg-color: var(--kk-panel);
+  --el-text-color-primary: var(--kk-text);
+  background: var(--kk-panel);
+  border-color: var(--kk-line);
+}
+
+.el-input, .el-textarea, .el-input-number {
+  --el-input-bg-color: #12161b;
+  --el-input-border-color: var(--kk-line);
+  --el-input-text-color: var(--kk-text);
+  --el-input-hover-border-color: #3a4654;
+}
+.el-input__inner, .el-textarea__inner { color: var(--kk-text); }
+.el-input-number__decrease, .el-input-number__increase {
+  background: #1d222a; color: var(--kk-text); border-color: var(--kk-line);
+}
+.el-form-item__label { color: var(--kk-dim); }
+.el-button { --el-button-text-color: var(--kk-text); --el-button-bg-color: #1d222a; --el-button-border-color: #313a46; }
+.el-button:hover { --el-button-hover-bg-color: #262d37; --el-button-hover-border-color: #3d4a58; }
+
+/* 兜底：EP 默认主题的浅色变量，浮层里到处会用到 */
+.el-button {
+  --el-button-bg-color: #1d222a;
+  --el-button-border-color: #313a46;
+  --el-button-text-color: #d7dee7;
+  --el-button-hover-bg-color: #262d37;
+  --el-button-hover-border-color: #3d4a58;
+  --el-button-hover-text-color: #ffffff;
+  --el-button-active-bg-color: #1a1f26;
+}
+.el-button--primary {
+  --el-button-bg-color: #2a8f86;
+  --el-button-border-color: #2a8f86;
+  --el-button-hover-bg-color: #35a89d;
+  --el-button-hover-border-color: #35a89d;
+  --el-button-text-color: #ffffff;
+}
+.el-button--danger {
+  --el-button-text-color: #f0a3a3;
+  --el-button-bg-color: #2a1f22;
+  --el-button-border-color: #4a2f33;
+  --el-button-hover-bg-color: #3a272b;
+  --el-button-hover-border-color: #5c3a40;
+  --el-button-hover-text-color: #ffc9c9;
+}
+.el-button--primary.is-plain {
+  --el-button-text-color: #6fd3c8;
+  --el-button-bg-color: rgba(79, 209, 197, .1);
+  --el-button-border-color: rgba(79, 209, 197, .4);
+}
+.el-button--danger.is-plain {
+  --el-button-text-color: #e88f8f;
+  --el-button-bg-color: rgba(245, 108, 108, .1);
+  --el-button-border-color: rgba(245, 108, 108, .4);
+}
+.el-button.is-text, .el-button.is-link { --el-button-bg-color: transparent; }
+.el-loading-mask { background-color: rgba(23, 27, 33, .8); }
+.el-popper.is-dark { background: #1d222a; border-color: var(--kk-line); }
+
+/* ─────────────────────────────────────────────────────────────
+ * 浮层与容器类组件的暗色适配
+ *
+ * Element Plus 的 el-card / el-alert / el-descriptions 默认是白底，
+ * 在深色主题下会变成刺眼的白块 —— 截图里非常明显。
+ * 这些组件不是 teleport 到 body 的，但用的是独立的 CSS 变量，
+ * 不会被全局的 --el-bg-color 覆盖，必须逐个指定。
+ * ───────────────────────────────────────────────────────────── */
+
+.el-card {
+  --el-card-bg-color: var(--kk-panel);
+  --el-card-border-color: var(--kk-line);
+  background: var(--kk-panel);
+  border-color: var(--kk-line);
+}
+.el-card__header {
+  border-bottom: 1px solid var(--kk-line);
+  color: var(--kk-text);
+  font-weight: 600;
+}
+
+.el-alert {
+  border: 1px solid transparent;
+  border-radius: 10px;
+}
+.el-alert--info    { --el-alert-bg-color: #17232b; --el-alert-text-color: #a9c6d6; border-color: #24404f; }
+.el-alert--warning { --el-alert-bg-color: #2a2418; --el-alert-text-color: #e6cf9a; border-color: #4a4028; }
+.el-alert--error   { --el-alert-bg-color: #2a1b1e; --el-alert-text-color: #f0b3b3; border-color: #4a2a30; }
+.el-alert--success { --el-alert-bg-color: #16281f; --el-alert-text-color: #a3d9b8; border-color: #244634; }
+.el-alert__title  { color: inherit; font-weight: 600; }
+.el-alert__description { color: inherit; opacity: .88; }
+.el-alert .el-alert__close { color: inherit; }
+
+.el-descriptions {
+  --el-descriptions-item-bordered-label-background: #1a1f26;
+  --el-fill-color-blank: transparent;
+  background: transparent;
+  color: var(--kk-text);
+}
+.el-descriptions__label { color: var(--kk-dim); }
+.el-descriptions__cell { border-color: var(--kk-line); }
+.el-descriptions .el-descriptions__body { background: transparent; }
+
+/* 表单标签默认左对齐时宽度要够，否则中文标签会折成两行 */
+.el-form-item__label { color: var(--kk-dim); }
+
+/* 开关关闭时的轨道在深色底上要有足够对比，否则像没渲染出来 */
+.el-switch { --el-switch-off-color: #333b45; }
+.el-switch__core { border-color: transparent; }
+
+.el-divider { border-color: var(--kk-line); }
+.el-divider__text { background: var(--kk-panel); color: var(--kk-dim); }
