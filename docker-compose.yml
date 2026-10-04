@@ -27,7 +27,15 @@ services:
       dockerfile: Dockerfile
     image: kokuu-credit-admin:1.0.0
     restart: unless-stopped
-    env_file: [.env]
+    env_file:
+      # ★ required: false —— 刚 clone 下来还没 cp .env.example .env 时，
+      #   compose 会因为找不到 env_file 直接报 "no such file"，
+      #   报的还是行号，用户根本看不出是缺 .env。
+      #   required: false 让它降级成"只用下面的 environment"，
+      #   报错就变成 ADMIN_TOKEN 没设这种能看懂的信息。
+      - path: .env
+        required: false
+
     environment:
       BACKEND: standalone
       DB_HOST: mysql

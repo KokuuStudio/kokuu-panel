@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "env": "node scripts/sync-env.js"
+    "test": "node src/apitest.mjs && node src/reflowtest.mjs",
+    "env": "node ../scripts/sync-env.js"
   },
   "dependencies": {
     "express": "^4.19.2",

@@ -108,7 +108,20 @@ r.convNew= await call('POST', '/game/convert',
 r.sugg   = await call('GET', '/players/suggest?kw=' + PN.slice(0, 3));
 r.ledg   = await call('GET', '/ledger?size=50');
 r.lFrom  = await call('GET', '/ledger?from=2000-01-01');
-r.lToday = await call('GET', '/ledger?from=' + new Date().toISOString().slice(0, 10));
+// ★ 用**本地**日期，不是 toISOString()：
+//   toISOString() 取的是 UTC 日期。在 GMT+8 的凌晨 0–8 点里，
+//   UTC 还停在前一天，于是 from=<昨天> 会把刚写的流水全排除掉，
+//   「查今天有数据」必然失败。本地测试一直在下午跑，UTC 与本地同一天，
+//   所以这个 bug 藏了很久 —— 它只在非 UTC 时区的凌晨发作。
+//   正确做法：区间语义本来就以服务器本地时间为准（见 ledger.js 的 parseTimeRange），
+//   测试也得用本地日期才与服务端口径一致。
+const localDate = (() => {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+})();
+r.lToday = await call('GET', '/ledger?from=' + localDate);
+
 r.lJunk  = await call('GET', '/ledger?from=not-a-date');
 r.lSrc   = await call('GET', '/ledger?source=game');
 r.detail = await call('GET', '/users/' + U);

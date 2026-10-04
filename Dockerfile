@@ -32,7 +32,10 @@ RUN apk add --no-cache tini
 COPY --from=deps /app/server/node_modules ./node_modules
 COPY server/package.json ./
 COPY server/src ./src
-COPY server/scripts ./scripts
+# ★ 不要 COPY server/scripts —— 那个目录不存在（开发期的
+#   scripts/sync-env.js 在仓库根，而且只给本地用：它读 .env.remote
+#   与 ops/token.txt，这些都不该进镜像）。曾写了这行导致
+#   `docker build` 直接失败，而本机无 Docker 没能第一时间发现。
 
 # 前端产物。用 /app/web/dist，与 server/src/index.js 里的
 # `new URL('../../web/dist/', import.meta.url)` 相对位置对应。

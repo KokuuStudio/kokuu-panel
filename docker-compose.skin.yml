@@ -31,7 +31,11 @@ services:
       dockerfile: Dockerfile
     image: kokuu-credit-admin:1.0.0
     restart: unless-stopped
-    env_file: [.env]
+    env_file:
+      # 同 docker-compose.yml：缺 .env 时降级，别报 "no such file"
+      - path: .env
+        required: false
+
     environment:
       BACKEND: skin
 

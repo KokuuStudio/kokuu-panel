@@ -38,14 +38,34 @@ jobs:
           REDIS_HOST: 127.0.0.1
           REDIS_PORT: 6379
         run: |
-          node src/index.js &
+          # ★ 日志落文件而不是只进 stdout：后端是后台进程，
+          #   失败时 stdout 早就被后续输出冲掉了，只留文件才能 dump。
+          #   第一版失败就是因为看不到后端日志，排查只能靠猜。
+          node src/index.js > ../ci-server.log 2>&1 &
+          echo $! > ../ci-server.pid
+
           for i in $(seq 1 30); do
             if curl -sf http://127.0.0.1:8799/api/ping >/dev/null; then break; fi
+            # 进程死了就别再空等 30 秒 —— 直接把日志打出来
+            if ! kill -0 "$(cat ../ci-server.pid)" 2>/dev/null; then
+              echo "::error::后端进程已退出，日志如下："
+              cat ../ci-server.log
+              exit 1
+            fi
             sleep 1
           done
-          curl -sf http://127.0.0.1:8799/api/ping || { echo "后端没起来"; exit 1; }
+
+          if ! curl -sf http://127.0.0.1:8799/api/ping >/dev/null; then
+            echo "::error::后端 30 秒内没起来，日志如下："
+            cat ../ci-server.log
+            exit 1
+          fi
+          curl -s http://127.0.0.1:8799/api/ping; echo
+
           node src/apitest.mjs   http://127.0.0.1:8799 testtoken123
           node src/reflowtest.mjs http://127.0.0.1:8799 testtoken123
+
+          kill "$(cat ../ci-server.pid)" 2>/dev/null || true
 
   # ── 插件编译（Java 8 字节码）───────────────────────────
   # ★ 单独检查字节码版本：
@@ -75,19 +95,50 @@ jobs:
         working-directory: exchange-bridge
         run: mvn -B -q package -DskipTests
 
-      - name: 校验字节码为 Java 8（major 52）
+      - name: 校验字节码为 Java 8 可加载（major <= 52）
         working-directory: exchange-bridge
         run: |
-          JAR=$(ls target/*.jar | grep -v sources | head -1)
+          # ★ 这个检查第一版是错的，实测才发现：它 `find ... | head -1`
+          #   随机抽一个 class 出来看 major，等于靠运气。
+          #   shade 把 jedis / gson / slf4j 全打进 jar，实测 970 个 class 里混着：
+          #     major 51 → 217 个（gson 等，Java 7 编译的，Java 8 能加载，没问题）
+          #     major 52 → 752 个
+          #     major 53 →   1 个（META-INF/versions/9/module-info.class）
+          #   本地恰好抽到 52 → 绿；CI 上抽到 53 → 红。同样的代码，结论相反。
+          #
+          # ★ 为什么要排除 META-INF/：
+          #   那个唯一的 53 是多版本 JAR 的模块声明（MR-JAR）。
+          #   Java 8 根本不读 versions/ 目录，永远不会加载它 ——
+          #   把它算进失败是纯误报。
+          #
+          # 正确判据：**Java 8 真会加载到的 class，major 都必须 <= 52**。
+          JAR=$(ls target/*.jar | grep -v sources | grep -v original | head -1)
           echo "检查 $JAR"
+          rm -rf target/classes-check
           unzip -o -q "$JAR" -d target/classes-check
-          CLS=$(find target/classes-check -name '*.class' | head -1)
-          MAJOR=$(javap -v "$CLS" | grep 'major version' | awk '{print $3}')
-          echo "major version = $MAJOR"
-          if [ "$MAJOR" != "52" ]; then
-            echo "::error::字节码是 major $MAJOR，必须是 52（Java 8）—— 1.12.2 会加载失败"
-            exit 1
-          fi
+
+          python3 - <<'PY'
+          import pathlib, sys
+          root = pathlib.Path('target/classes-check')
+          dist, bad, n = {}, [], 0
+          for f in root.rglob('*.class'):
+              # MR-JAR 的 versions/ 目录 Java 8 不会加载，豁免
+              if 'META-INF' in f.parts:
+                  continue
+              n += 1
+              major = int.from_bytes(f.read_bytes()[6:8], 'big')  # 大端 u2
+              dist[major] = dist.get(major, 0) + 1
+              if major > 52:
+                  bad.append((major, str(f)))
+          print(f'共检查 {n} 个 class，major 分布 {dict(sorted(dist.items()))}')
+          if bad:
+              print('::error::以下 class 的 major > 52（Java 9+），'
+                    '1.12.2 的 Java 8 加载会 UnsupportedClassVersionError')
+              for major, path in bad[:20]:
+                  print(f'  major {major}  {path}')
+              sys.exit(1)
+          print('全部 Java 8 会加载的 class 均为 major <= 52 —— 通过')
+          PY
 
   # ── 镜像构建 ───────────────────────────────────────────
   # ★ 有了这一步，「Dockerfile 能不能构建」在 PR 上就能验证，
@@ -135,6 +186,22 @@ jobs:
       - uses: actions/checkout@v4
       - name: 两份 compose 都要能解析
         run: |
+          # ★ 两份 compose 都声明了 env_file: .env，而 .env 在 .gitignore 里
+          #   （它含 ADMIN_TOKEN 与数据库口令，绝不能提交）。
+          #   CI 里没有 .env，`docker compose config` 会直接失败。
+          #   这里造一份临时的，只为让语法能被解析。
+          cp .env.example .env
+
+          # 独立模式：自带 mysql + redis
           docker compose -f docker-compose.yml config -q
+          # 皮肤站模式：必须**没有** mysql / redis 服务（连宿主机）
           docker compose -f docker-compose.skin.yml config -q
-          echo "compose 语法 OK"
+
+          # 皮肤站那份里若混进了 mysql/redis，说明两份文件的边界又糊了 ——
+          # 那会导致「皮肤站模式下误起第二个 MySQL，连上但全是空表」。
+          if docker compose -f docker-compose.skin.yml config --services \
+             | grep -qxE 'mysql|redis'; then
+            echo "::error::docker-compose.skin.yml 不该包含 mysql/redis 服务（会与皮肤站的库冲突）"
+            exit 1
+          fi
+          echo "两份 compose 语法 OK，且皮肤站那份不含 mysql/redis"
