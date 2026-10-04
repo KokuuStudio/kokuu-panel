@@ -133,11 +133,15 @@ r.zerod  = await call('POST', `/users/${U}/score`, { delta: 0, eventId: EH + 'q'
 
 const isSkin = r.meta.j.hasSkin === true;
 
-// 取一个真实存在的账户做「按玩家名筛选」断言。
-// 随机名字在 standalone 能测（自动开户），在 skin 下永远查不到 ——
-// 那是测试设计的错，不能反过来当成功能缺陷。
+// 取一个**真实存在**的账户做「按玩家名筛选」断言。
+// ★ 别在 standalone 下跳过这三条 —— 跳过时整份报告仍显示「全部通过」，
+//   看起来是绿的，实际根本没测「按玩家名筛流水/账户」这个功能。
+//   （第一版写成 `isSkin ? rows[0] : null`，于是 standalone 永远跳过；
+//     本地因为有上一轮残留数据、看不出问题，CI 全新 checkout 才暴露。）
+//   standalone 下 U 是本脚本自己在上面建的，必然存在，直接用它。
+//   skin 下账户由注册流程产生，只能从库里取第一个。
 const rFirst = await call('GET', '/users?size=1');
-const realUser = isSkin ? rFirst.j?.rows?.[0] : null;
+const realUser = isSkin ? rFirst.j?.rows?.[0] : { uid: U, nickname: U };
 const realName = realUser ? String(realUser.nickname) : '';
 
 r.sugg2  = await call('GET', '/players/suggest?kw=' + encodeURIComponent(realName.slice(0, 2)));
@@ -173,18 +177,20 @@ expect('名字前缀候选按前缀匹配', r.sugg, 200, x =>
   Array.isArray(x.j.rows) && x.j.rows.every((o) => typeof o.nickname === 'string'));
 
 /* ── 全站流水查询：时间 / 玩家 / 来源 ──────────────────────── */
-// ★ 玩家名筛选必须用**库里真实存在**的名字。
-//   随机造一个名字在 standalone 能测（会自动开户），
-//   在 skin 下永远查不到 —— 那是测试设计错了，不是功能坏了。
-if (realUser) {
+// ★ 这三条**不允许静默跳过**。
+//   跳过时报告照样显示「全部通过」，CI 也是绿的 —— 但功能其实没测，
+//   这种"绿色的假象"比没有测试更危险：它让人以为筛选用例有覆盖。
+//   所以取不到真实账户时直接判失败，把问题摆到台面上。
+if (!realUser) {
+  fails++;
+  console.log('✗ 取不到可用于筛选的真实账户 —— 玩家名筛选断言无法执行（这是环境问题，不是功能问题）');
+} else {
   expect('按玩家名筛流水', r.lKw, 200, x =>
     x.j.total > 0 && x.j.rows.every((o) => String(o.nickname || '').includes(realName)));
   expect('玩家名前缀候选能命中真实账户', r.sugg2, 200, x =>
     x.j.rows.some((o) => String(o.nickname).startsWith(realName.slice(0, 2))));
   expect('按玩家名筛账户', r.lUsers, 200, x =>
     x.j.total > 0 && x.j.rows.every((o) => String(o.nickname).includes(realName)));
-} else {
-  console.log('\n注：账本内暂无真实账户，跳过玩家名筛选断言');
 }
 
 expect('起始时间筛选不报错', r.lFrom, 200, x => typeof x.j.total === 'number');

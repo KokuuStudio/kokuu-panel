@@ -6,6 +6,15 @@ on:
   pull_request:
     branches: [main, master]
 
+# ★ 为什么需要 artifact：
+#   actions logs 接口要仓库 admin 权限才拉得到，
+#   只有 maintainer 的 token 能看到 CI 输出 —— 于是「CI 红了」这件事
+#   对没有 admin 权限的协作者就是**黑盒**，只能看着红色猜。
+#   把诊断信息（后端日志、失败断言、构建日志）作为 artifact 上传后，
+#   任何有仓库读权限的人都能下载排查。
+permissions:
+  contents: read
+
 jobs:
   # ── 接口测试（standalone）───────────────────────────────
   # 不依赖 MySQL：独立模式的账本是 JSONL，起一个 node 进程就够。
@@ -63,9 +72,24 @@ jobs:
           curl -s http://127.0.0.1:8799/api/ping; echo
 
           node src/apitest.mjs   http://127.0.0.1:8799 testtoken123
-          node src/reflowtest.mjs http://127.0.0.1:8799 testtoken123
 
-          kill "$(cat ../ci-server.pid)" 2>/dev/null || true
+      # ★ 两个测试拆成两步：合在一起时只能看到「起后端」红了，
+      #   不知道是 apitest 挂了还是 reflowtest 挂了。
+      #   拆开后结论直接体现在 step 名字上。
+      - name: 回流测试
+        working-directory: server
+        run: node src/reflowtest.mjs http://127.0.0.1:8799 testtoken123
+
+      - name: 上传后端日志（失败排查用）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-server-log
+          path: |
+            ci-server.log
+            server/data-test/
+          retention-days: 7
+          if-no-files-found: ignore
 
   # ── 插件编译（Java 8 字节码）───────────────────────────
   # ★ 单独检查字节码版本：
@@ -159,6 +183,26 @@ jobs:
           tags: kokuu-credit-admin:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # ★ 构建失败时把完整构建日志留下来。
+      #   build-push-action 失败只给一行 summary，真正的原因（哪个 COPY
+      #   的源不存在、第几行语法错）在日志里 —— 没有它就只能反复重跑试。
+      #   buildx 的实际输出在 /tmp/buildx.log，要先 --debug 才会写。
+      - name: 收集构建日志
+        if: failure()
+        run: |
+          docker buildx build --progress=plain -t kokuu-credit-admin:ci . \
+            > build-plain.log 2>&1 || true
+          tail -100 build-plain.log
+
+      - name: 上传构建日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-build-log
+          path: build-plain.log
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: 冒烟：容器能起来且 /api/ping 有响应
         run: |

@@ -3,19 +3,31 @@
 # 单阶段做不干净的原因：vite 与 element-plus 的开发依赖会让镜像大出一倍，
 # 而运行时只需要 dist 里的静态文件 + server 的生产依赖。
 
+# ★ 源要能被覆盖，不能写死国内镜像。
+#   package-lock.json 里的 resolved 字段是**写死的下载地址**，
+#   而 npm 的 replace-registry-host 默认值是 `npmjs` ——
+#   意思是「只把 registry.npmjs.org 换成别的源」，对 npmmirror 的地址无效。
+#   于是 `npm ci --registry=...` 这个参数会被**静默忽略**，
+#   境外构建镜像时仍然去连国内源（实测：默认参数 35s vs always 0.9s，
+#   差的就是有没有真的换源）。
+#   → 必须显式加 --replace-registry-host=always 才换得动。
+#   默认走官方源；国内构建加：
+#     --build-arg NPM_REGISTRY=https://registry.npmmirror.com
+ARG NPM_REGISTRY=https://registry.npmjs.org
+
 FROM node:22-alpine AS deps
 WORKDIR /app
-# ★ .npmrc 必须一起 COPY：项目锁定了国内镜像源。
-#   国内网络下不换源，npm install 可能要跑好几分钟甚至超时失败。
-COPY .npmrc* ./
 COPY server/package*.json ./server/
-RUN cd server && npm ci --omit=dev 2>/dev/null || npm install --omit=dev
+RUN cd server && npm ci --omit=dev \
+      --registry=$NPM_REGISTRY --replace-registry-host=always \
+    || (npm install --omit=dev \
+      --registry=$NPM_REGISTRY --replace-registry-host=always)
 
 FROM node:22-alpine AS build
 WORKDIR /app
-COPY .npmrc* ./
 COPY web/package*.json ./web/
-RUN cd web && (npm ci 2>/dev/null || npm install)
+RUN cd web && (npm ci --registry=$NPM_REGISTRY --replace-registry-host=always \
+             || npm install --registry=$NPM_REGISTRY --replace-registry-host=always)
 COPY web/ ./web/
 # 相对路径解析基于 cwd，放到 /app/web 下跑，产物落在 /app/web/dist
 RUN cd web && npm run build
