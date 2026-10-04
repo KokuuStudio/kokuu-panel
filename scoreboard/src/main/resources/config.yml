@@ -1,0 +1,72 @@
+# ============================================================================
+#  KokuuScoreboard 配置
+#
+#  改完用 /kokuusb reload 生效，不需要重启服务端。
+#
+#  ⚠ 如果你同时装了 CMI / 其它带侧边栏的插件，请把它们的侧边栏关掉。
+#    Bukkit 的侧边栏是「一个玩家同一时刻只有一个」，两边都开的结果是
+#    互相覆盖、看起来在闪。CMI 的话是 config.yml 里的 Scoreboard 模块。
+# ============================================================================
+
+# 侧边栏顶部的标题。注意长度上限：
+#   1.13+ 是 32 个字符，1.12 及以下只有 16 —— 超了会被客户端截断，
+#   插件启动时会检查并在控制台提醒。
+title: "&6&lKokuuStudio"
+
+# 侧边栏内容，一行一条。支持 & 颜色代码。
+#
+# 占位符：
+#   %player%        玩家名
+#   %displayname%   玩家显示名（含称号等前缀）
+#   %world%         所在世界名
+#   %x% %y% %z%     整数坐标
+#   %online%        当前在线人数
+#   %max%           最大人数
+#   %ping%          延迟（毫秒）
+#   %balance%       游戏内余额（Vault；没有经济后端时显示 balanceFallback）
+#   %balance_raw%   余额的纯数字（不带千分位，方便做比较）
+#   %currency%      货币名（Vault；拿不到时为空）
+#   %tps%           最近的平均 TPS，一位小数
+#   %health%        当前生命值（整数）
+#   %food%          饥饿值
+#   %level%         经验等级
+#   %gamemode%      游戏模式
+#   %time%          当前时间 HH:mm
+#   %date%          当前日期 yyyy-MM-dd
+#   %uptime%        服务端已运行时长
+#
+# 每一行的可见长度上限：1.13+ 约 64 个字符，1.12 约 32 个。
+# 超长会被截断（不是崩，但会少字），启动时也会提醒。
+lines:
+  - "&7玩家: &f%player%"
+  - "&7在线: &f%online%&7/&f%max%"
+  - "&7延迟: &f%ping%&7ms"
+  - "&7余额: &f%balance%"
+  - ""
+  - "&7世界: &f%world%"
+  - "&7坐标: &f%x% &7%y% &f%z%"
+  - ""
+  - "&7TPS: &f%tps%"
+  - "&8%time%"
+
+# 刷新间隔（tick，20 tick = 1 秒）。
+# 20 是每秒一次；想更省性能就调大。低于 10 没有意义 —— 玩家看不出差别。
+updateIntervalTicks: 20
+
+# 只在哪些世界显示。
+#   mode: blacklist → list 里的世界不显示
+#   mode: whitelist → 只有 list 里的世界显示
+# list 为空时：blacklist 表示所有世界都显示；whitelist 表示都不显示。
+worlds:
+  mode: blacklist
+  list: []
+
+# 玩家第一次进来时是否默认打开。玩家可以用 /kokuusb off 自己关掉，
+# 那个选择会被记住（在内存里，重启服务端后恢复成这个默认值）。
+defaultEnabled: true
+
+# 拿不到余额时 %balance% 显示成什么（没装 Vault / 经济后端没就绪）。
+balanceFallback: "&8—"
+
+# 侧边栏用的内部名字。一般不用改；除非和别的插件撞了导致报错。
+objectiveName: "kokuu_sb"

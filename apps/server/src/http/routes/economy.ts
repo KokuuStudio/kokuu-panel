@@ -87,6 +87,75 @@ export function registerEconomyRoutes(app: FastifyInstance, ctx: AppContext): vo
     );
   };
 
+  /**
+   * 经济模块的**状态**。这个接口永远返回 200，不会 501。
+   *
+   * 为什么需要它：默认部署下「读平台账本」的接口全部 501，于是前端只能靠
+   * 「请求失败」去猜自己的处境 —— 结果就是整个经济页面看起来是坏的
+   * （统计卡是 `—`、列表报错、配置卡报错、连能用的「游戏内货币」也点不到，
+   * 因为它的入口要求先选中一个账户）。
+   *
+   * 有了这个接口，前端就能**明确区分**三种情况并各自渲染：
+   *   1. 站点积分由外部账本持有（默认）→ 说明现状 + 怎么接入，不是错误
+   *   2. 平台自带账本（standalone）→ 渲染完整的账户/流水/配置界面
+   *   3. 游戏内货币 → 这条路径与账本模式无关，始终可用
+   */
+  app.get('/_api/economy/status', async (request) => {
+    requirePermission(request, 'economy.view');
+    const owned = config.ledgerMode === 'standalone';
+
+    return {
+      ledger: {
+        mode: config.ledgerMode,
+        owned,
+        title: owned ? '站点积分：平台自带账本' : '站点积分：由皮肤站持有，平台不建账本',
+        detail: owned
+          ? '平台正在持有积分账本。这是给「没有皮肤站」的部署用的兜底模式。'
+          : '唯一账本是皮肤站的 users.score + credit_ledger（由 kokuu-credit 维护）。'
+            + '平台自建第二个余额会造成两个真相源 —— 两边对不上时无从判断谁对，'
+            + '而这正是生态里反复警告过的事。',
+        howToEnable: owned ? null : 'KP_LEDGER_MODE=standalone',
+        docs: 'docs/ECOSYSTEM.md',
+      },
+      gameCurrency: {
+        available: true,
+        note: '游戏内货币的权威在 MC 服务端的经济插件（Vault），平台通过 Agent 读写，'
+          + '与账本模式无关。',
+      },
+    };
+  });
+
+  /**
+   * 读某个玩家在某个节点上的**游戏内余额**。
+   *
+   * 余额是「每个服务端各自一份」的（Vault 的经济后端在服务端本地），
+   * 所以必须指明 nodeId —— 不指定就只能猜，而猜错会让人看到另一台服的余额。
+   */
+  app.get('/_api/economy/balance', async (request) => {
+    requirePermission(request, 'economy.view');
+    const query = request.query as Record<string, unknown>;
+    const nodeId = optStr(query, 'nodeId');
+    const uuid = optStr(query, 'uuid');
+
+    if (!nodeId) {
+      throw HttpError.badRequest('缺少 nodeId：游戏内余额是每个服务端各自一份的');
+    }
+    if (!uuid || !isSafeUuid(uuid)) throw HttpError.badRequest('UUID 格式不正确');
+
+    const player = ctx.store.getPlayer(uuid);
+
+    try {
+      const result = await ctx.gateway.call(nodeId, 'economy.getBalance', {
+        uuid,
+        // name 可选：Vault 支持按离线玩家取余额，拿不到名字也能读。
+        ...(player?.name ? { name: player.name } : {}),
+      });
+      return { nodeId, uuid, name: player?.name ?? null, ...result };
+    } catch (error) {
+      throw toHttpError(error);
+    }
+  });
+
   app.get('/_api/economy/accounts', async (request) => {
     requirePermission(request, 'economy.view');
     requireOwnedLedger();

@@ -1,0 +1,28 @@
+name: KokuuScoreboard
+version: 1.0.0
+main: com.kokuustudio.kokuupanel.scoreboard.KokuuScoreboardPlugin
+description: 侧边栏记分牌：玩家、在线数、延迟、余额、TPS 等基础信息，内容由 config.yml 驱动
+author: KokuuStudio
+website: https://github.com/KokuuStudio
+
+# 1.12.2 用 Properties 读 plugin.yml，会忽略不认识的键；1.13+ 又需要它才肯加载。
+# '1.13' 是唯一同时满足两头的值 —— 与 agent/ 、legacy-fix/ 保持一致。
+api-version: '1.13'
+
+# 软依赖：装了 Vault 时它先加载，这样 %balance% 才拿得到经济后端。
+# 没装也不会出错 —— 余额那一行会显示成可配置的占位文案。
+softdepend:
+  - Vault
+
+commands:
+  kokuusb:
+    description: 记分牌开关与重载
+    usage: /kokuusb <on|off|reload>
+    aliases: [ksb, kscore]
+permissions:
+  kokuusb.use:
+    description: 能看见记分牌
+    default: true
+  kokuusb.admin:
+    description: 能用 /kokuusb 开关与重载
+    default: op

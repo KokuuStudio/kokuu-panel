@@ -261,6 +261,24 @@ export interface LpPermission {
   direct: boolean;
 }
 
+/**
+ * 权限目录里的一条 —— 「这个服务端上存在这个权限节点」。
+ *
+ * 来源是 {@code Bukkit.getPluginManager().getPermissions()}，也就是
+ * **各插件启动时注册进来的权限**。这是判断「某个节点到底存不存在」的权威依据：
+ * 手动敲一个没人注册过的节点，LuckPerms 会照样存下来，但它永远不会生效，
+ * 而管理员从界面上看不出区别。
+ */
+export interface LpPermissionInfo {
+  node: string;
+  /** 插件注册时给的描述；没写描述则为 null。 */
+  description: string | null;
+  /** 注册的默认值：TRUE / FALSE / OP / NOT_OP。 */
+  defaultValue: string | null;
+  /** 注册它的插件名，方便判断这个节点属于谁（如 CMI、LuckPerms）。 */
+  plugin: string | null;
+}
+
 export interface LpMeta {
   prefix: string;
   suffix: string;
@@ -370,6 +388,21 @@ export interface ServerToAgentMethods {
   };
 
   'luckperms.groups.list': { params: Record<string, never>; result: LpGroup[] };
+  /**
+   * 权限节点目录（只读）。
+   *
+   * 让界面能给出**真实存在**的节点候选，而不是让管理员盲敲。
+   * 数据来自所有插件注册的权限（见到 `Bukkit.getPluginManager().getPermissions()`）。
+   */
+  'luckperms.permissions.catalog': {
+    params: { query?: string; limit?: number };
+    result: {
+      items: LpPermissionInfo[];
+      /** 服务端注册的权限总数（过滤之前），用来提示「是不是被截断了」。 */
+      total: number;
+      truncated: boolean;
+    };
+  };
   'luckperms.group.create': {
     params: { name: string };
     result: { ok: true; changed: boolean };
@@ -415,7 +448,19 @@ export interface ServerToAgentMethods {
       note?: string;
       eventId: string;
     };
-    result: { ok: true; balanceAfter: number };
+    /**
+     * `duplicate` 表示这次 `eventId` **之前已经处理过**，本次没有真的动钱
+     * （`balanceAfter` 是那一次的结果）。
+     *
+     * 为什么是「成功 + 标记」而不是报错：幂等键的用途就是让调用方在
+     * **没收到响应**时重试。重试理应拿到成功，而不是一个需要特殊处理
+     * 的错误 —— 否则「网络超时后重试」这条最正常的路径会变成异常分支。
+     *
+     * ⚠️ 与平台自带账本的 `POST /economy/accounts/:uuid/adjust` 语义不同：
+     * 那条路重复 `eventId` 回 409 CONFLICT。两边都安全（都不会重复发钱），
+     * 但调用方需要知道区别。
+     */
+    result: { ok: true; balanceAfter: number; duplicate: boolean };
   };
 }
 
@@ -468,6 +513,7 @@ export const METHOD_CAPABILITY: Partial<Record<ServerToAgentMethod, Capability>>
   'luckperms.user.unsetPermission': 'luckperms',
   'luckperms.user.setMeta': 'luckperms',
   'luckperms.groups.list': 'luckperms',
+  'luckperms.permissions.catalog': 'luckperms',
   'luckperms.group.create': 'luckperms',
   'luckperms.group.delete': 'luckperms',
   'luckperms.group.setPermission': 'luckperms',

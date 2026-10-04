@@ -102,6 +102,22 @@ const activeMenu = computed(() => {
   return '';
 });
 
+/**
+ * 菜单点击 → 按**路由名**跳转。
+ *
+ * 刻意不用 el-menu 的 `router` 属性：那个属性把 index 当**路径** push，
+ * 而这里的 index 是路由名。`dashboard` 的名字与路径（`/`）不一致，
+ * 用 router 属性点「总览」会跳到 `/dashboard` → 404；其它项因为
+ * 名字恰好等于路径而蒙对，所以只有总览暴露出来。
+ *
+ * @param index el-menu 抛出的 index，在当前设计里就是路由名
+ */
+function onNavSelect(index: string): void {
+  if (!router.hasRoute(index)) return;
+  // 重复点击当前页时 push 会 reject（NavigationDuplicated），这里吞掉即可。
+  void router.push({ name: index }).catch(() => undefined);
+}
+
 const pageTitle = computed(() => route.meta.title ?? 'KokuuPanel');
 
 const wsState = computed(() => {
@@ -169,12 +185,25 @@ onMounted(() => {
       </div>
 
       <el-scrollbar class="layout__nav">
+        <!--
+          ⚠ 这里**不能**用 el-menu 的 `router` 属性。
+
+          那个属性会拿 `index` 直接 router.push()，也就是**当成路径**用；
+          而 navItems 里的 index 是**路由名**（见上面的 navItems 定义，
+          以及下面 activeMenu 用的也是 route.name）。两者不总是一样：
+
+              name = dashboard  →  路径是 /          → push('/dashboard') 404
+              name = nodes      →  路径是 /nodes     → push('/nodes') 碰巧对
+
+          所以只有「总览」会 404，其它项是蒙对的 —— 这种 bug 最难发现。
+          改成显式按名字跳转（onNavSelect），名字与路径就不需要一一对应了。
+        -->
         <el-menu
           :default-active="activeMenu"
           :collapse="collapsed"
           :collapse-transition="false"
-          router
           class="layout__menu"
+          @select="onNavSelect"
         >
           <template v-for="item in visibleNav" :key="item.name">
             <el-sub-menu v-if="item.children" :index="item.name">

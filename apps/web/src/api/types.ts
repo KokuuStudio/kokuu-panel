@@ -26,6 +26,7 @@ export type {
   LpGroupRef,
   LpMeta,
   LpPermission,
+  LpPermissionInfo,
   LpUser,
   Metrics,
   Permission,
@@ -35,6 +36,14 @@ export type {
   Role,
   ServerInfo,
 } from '@kokuu/protocol';
+
+/** `GET /luckperms/nodes/:id/permissions` 的返回。 */
+export interface LpPermissionCatalog {
+  items: import('@kokuu/protocol').LpPermissionInfo[];
+  /** 过滤之前服务端注册的权限总数。 */
+  total: number;
+  truncated: boolean;
+}
 
 // ─────────────────────────────────────────────────────────────
 // 通用
@@ -308,6 +317,41 @@ export interface EconomyAccount {
   updatedAt: number | null;
 }
 
+/**
+ * `GET /economy/status` —— 经济模块的现状自述。
+ *
+ * 这个接口永远 200，用它决定页面怎么渲染，**不要**靠「哪个请求失败了」去猜：
+ * 默认部署（`ledgerMode: 'external'`）下平台不持有积分账本，
+ * 所有读账本的接口都会 501 —— 那是设计决定，不是故障。
+ */
+export interface EconomyStatus {
+  ledger: {
+    mode: 'external' | 'standalone';
+    /** 平台是否真的持有积分账本。false 时账户/流水/配置界面应当隐藏。 */
+    owned: boolean;
+    title: string;
+    detail: string;
+    /** 想启用平台自带账本要设的环境变量；already owned 时为 null。 */
+    howToEnable: string | null;
+    docs: string;
+  };
+  gameCurrency: {
+    /** 游戏内货币（Vault）通道。与账本模式无关，始终可用。 */
+    available: boolean;
+    note: string;
+  };
+}
+
+/** `GET /economy/balance` —— 某玩家在某节点上的游戏内余额。 */
+export interface GameCurrencyBalance {
+  nodeId: string;
+  uuid: string;
+  name: string | null;
+  balance: number;
+  currency: string;
+  backend: string;
+}
+
 /** 后端 ledger 行没有 `ts` / `currency`，只有 `createdAt` 等字段。 */
 export interface LedgerEntry {
   id: number;
@@ -384,6 +428,14 @@ export interface GameCurrencyPayload {
 
 export interface GameCurrencyResult {
   balanceAfter: number;
+  ok?: boolean;
+  /**
+   * `true` 表示这次幂等键之前已处理过，**本次没有真的动钱**
+   * （`balanceAfter` 是那一次留下的结果）。
+   *
+   * 界面必须把它说出来 —— 否则管理员重试一次就会以为「又发了一笔」。
+   */
+  duplicate?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────

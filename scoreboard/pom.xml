@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.kokuustudio</groupId>
+  <artifactId>kokuu-scoreboard</artifactId>
+  <version>1.0.0</version>
+  <packaging>jar</packaging>
+
+  <name>KokuuScoreboard</name>
+  <description>侧边栏记分牌：显示玩家、在线数、延迟、余额、TPS 等基础信息，内容由 config.yml 驱动</description>
+
+  <!--
+    构建约定与 agent/ 、legacy-fix/ 保持一致（见 docs/ARCHITECTURE.md §4）：
+    字节码必须是 Java 8（1.12.2 服务端只能跑 Java 8），用 release 8 压下来，
+    JDK 上的 "source value 8 is obsolete" 警告用 -Xlint:-options 消掉，
+    **不要**为了消警告把目标版本调高。
+  -->
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <maven.compiler.release>8</maven.compiler.release>
+  </properties>
+
+  <repositories>
+    <repository>
+      <id>spigot-repo</id>
+      <url>https://hub.spigotmc.org/nexus/content/repositories/snapshots/</url>
+    </repository>
+    <repository>
+      <id>jitpack.io</id>
+      <url>https://jitpack.io</url>
+    </repository>
+  </repositories>
+
+  <dependencies>
+    <!--
+      钉在 1.12.2：这是最低支持版本，也是唯一会踩到 prefix 16 字符上限的版本。
+      只用 1.8 就存在的那套 Scoreboard/Team API（legacy String 版），
+      它在 1.21 上依然可用（虽然被标了废弃），所以一个 jar 能覆盖 1.12.2~最新。
+    -->
+    <dependency>
+      <groupId>org.spigotmc</groupId>
+      <artifactId>spigot-api</artifactId>
+      <version>1.12.2-R0.1-SNAPSHOT</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!--
+      Vault：软依赖。余额占位符（%balance%）需要它。
+      只在编译期用，运行期由服务端提供；而且真正碰 net.milkbowl.* 的代码
+      被隔离在 VaultBridge 里，通过 Class.forName 反射加载 ——
+      没装 Vault 时那个类不会被加载，因此不会 NoClassDefFoundError。
+    -->
+    <dependency>
+      <groupId>com.github.MilkBowl</groupId>
+      <artifactId>VaultAPI</artifactId>
+      <version>1.7</version>
+      <scope>provided</scope>
+      <exclusions>
+        <exclusion>
+          <groupId>org.bukkit</groupId>
+          <artifactId>bukkit</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>kokuu-scoreboard-1.0.0</finalName>
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+        <filtering>false</filtering>
+      </resource>
+    </resources>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+        <configuration>
+          <release>8</release>
+          <encoding>UTF-8</encoding>
+          <compilerArgs>
+            <arg>-Xlint:-options</arg>
+          </compilerArgs>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

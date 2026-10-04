@@ -4,6 +4,8 @@ import com.kokuustudio.kokuupanel.agent.Capabilities;
 import com.kokuustudio.kokuupanel.agent.hooks.LpBridge;
 import com.kokuustudio.kokuupanel.agent.hooks.LuckPermsHook;
 import com.kokuustudio.kokuupanel.agent.model.LpModels.LpGroup;
+import com.kokuustudio.kokuupanel.agent.model.LpModels.LpPermissionCatalog;
+import com.kokuustudio.kokuupanel.agent.model.LpModels.LpPermissionInfo;
 import com.kokuustudio.kokuupanel.agent.model.LpModels.LpUser;
 import com.kokuustudio.kokuupanel.agent.model.SmallModels;
 import com.kokuustudio.kokuupanel.agent.protocol.AgentException;
@@ -11,7 +13,16 @@ import com.kokuustudio.kokuupanel.agent.protocol.ErrorCode;
 import com.kokuustudio.kokuupanel.agent.rpc.MainThreadExecutor;
 import com.kokuustudio.kokuupanel.agent.rpc.Params;
 import com.kokuustudio.kokuupanel.agent.rpc.RpcDispatcher;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import org.bukkit.Bukkit;
+import org.bukkit.permissions.Permission;
+import org.bukkit.plugin.Plugin;
 
 /**
  * LuckPerms 方法（协议 §5.5）。
@@ -127,6 +138,19 @@ public final class LuckPermsModule {
                                 return bridge.groups();
                             }
                         });
+                    }
+                });
+
+        dispatcher.register("luckperms.permissions.catalog", Capabilities.LUCKPERMS, false,
+                new RpcDispatcher.Handler() {
+                    @Override
+                    public Object handle(Params params) {
+                        final String query = params.optionalString("query", 64);
+                        final Long limit = params.longValue("limit", false);
+                        params.done();
+                        // 只遍历一次内存里的权限注册表，没有 IO。
+                        // 启动期插件还在往里写，但 RPC 只可能在启动完成之后到达。
+                        return permissionCatalog(query, limit);
                     }
                 });
 
@@ -308,5 +332,72 @@ public final class LuckPermsModule {
     private boolean invokeBoolean(LpCall<Boolean> call) {
         Boolean value = invoke(call);
         return value != null && value.booleanValue();
+    }
+
+    // ── 权限目录 ──────────────────────────────────────────────────────────
+
+    /**
+     * 这个服务端上**有哪些权限节点**。
+     *
+     * <p>为什么需要它：界面上加权限时是一个纯文本框，管理员只能盲敲。
+     * 敲一个没人注册过的节点，LuckPerms 会照样存下来，但它永远不会生效 ——
+     * 而管理员从界面上完全看不出区别。
+     *
+     * <p>数据源是 {@code Bukkit.getPluginManager().getPermissions()}，也就是各插件
+     * 启动时注册进来的权限（CMI 这类会注册几百条）。这是判断节点存不存在的权威依据。
+     *
+     * <p><b>不经过 LuckPerms</b>：这个目录跟 LP 无关（没装 LP 也拿得到），
+     * 所以刻意不放进 bridge。之所以挂在 luckperms 能力下，是因为调用它的界面
+     * 本来就是权限管理页。
+     */
+    private LpPermissionCatalog permissionCatalog(String query, Long limitRaw) {
+        int limit = 200;
+        if (limitRaw != null) {
+            limit = (int) Math.max(1L, Math.min(1000L, limitRaw.longValue()));
+        }
+        String needle = query == null ? "" : query.trim().toLowerCase(Locale.ENGLISH);
+
+        // Permission 不暴露「谁注册的」，只能反过来查各插件 plugin.yml 里声明的权限。
+        Map<String, String> owners = new HashMap<String, String>();
+        for (Plugin plugin : Bukkit.getPluginManager().getPlugins()) {
+            if (plugin == null || plugin.getDescription() == null) continue;
+            List<Permission> declared = plugin.getDescription().getPermissions();
+            if (declared == null) continue;
+            for (Permission one : declared) {
+                if (one == null || one.getName() == null) continue;
+                owners.put(one.getName().toLowerCase(Locale.ENGLISH), plugin.getName());
+            }
+        }
+
+        List<LpPermissionInfo> matched = new ArrayList<LpPermissionInfo>();
+        int total = 0;
+
+        for (Permission permission : Bukkit.getPluginManager().getPermissions()) {
+            if (permission == null || permission.getName() == null) continue;
+            String name = permission.getName();
+            total++;
+            if (!needle.isEmpty() && !name.toLowerCase(Locale.ENGLISH).contains(needle)) continue;
+
+            String description = permission.getDescription();
+            matched.add(new LpPermissionInfo(
+                    name,
+                    description == null || description.isEmpty() ? null : description,
+                    permission.getDefault() == null ? null : permission.getDefault().name(),
+                    owners.get(name.toLowerCase(Locale.ENGLISH))));
+        }
+
+        // 排序：候选列表要稳定可预测，否则每次搜索顺序都在变。
+        Collections.sort(matched, new Comparator<LpPermissionInfo>() {
+            @Override
+            public int compare(LpPermissionInfo a, LpPermissionInfo b) {
+                return a.node.compareToIgnoreCase(b.node);
+            }
+        });
+
+        boolean truncated = matched.size() > limit;
+        if (truncated) {
+            matched = new ArrayList<LpPermissionInfo>(matched.subList(0, limit));
+        }
+        return new LpPermissionCatalog(matched, total, truncated);
     }
 }

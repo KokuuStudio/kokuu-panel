@@ -12,7 +12,7 @@ import { computed, ref, watch } from 'vue';
 
 import { luckpermsApi } from '@/api/endpoints';
 import { describeApiError, toApiError } from '@/api/client';
-import type { LpGroup, LpPermission } from '@/api/types';
+import type { LpGroup, LpPermission, LpPermissionInfo } from '@/api/types';
 import { reportChanged } from '@/composables/useMutation';
 import { useAuthStore } from '@/stores/auth';
 import { PERMISSIONS } from '@/utils/permissions';
@@ -44,6 +44,45 @@ const parentCandidates = computed(() =>
 
 const newPermission = ref('');
 const newPermissionValue = ref(true);
+
+/**
+ * 权限节点候选。
+ *
+ * 之前这里是一个纯文本框 —— 管理员只能盲敲节点名，而敲错了（比如写成
+ * `essentials.flyy`）LuckPerms 会照样存下来，只是永远不会生效，
+ * 界面上看不出任何区别。现在候选来自服务端插件注册的权限，
+ * 所以「建议里有的」就是「真的存在的」。
+ */
+const permissionSuggestions = ref<LpPermissionInfo[]>([]);
+const permissionCatalogNote = ref('');
+const permissionSearching = ref(false);
+
+async function fetchPermissionSuggestions(
+  query: string,
+  callback: (items: Array<LpPermissionInfo & { value: string }>) => void,
+): Promise<void> {
+  permissionSearching.value = true;
+  try {
+    const result = await luckpermsApi.permissionCatalog(props.nodeId, {
+      q: query.trim() || undefined,
+      limit: 60,
+    });
+    const items = result?.items ?? [];
+    permissionSuggestions.value = items;
+    permissionCatalogNote.value = items.length
+      ? `服务端共注册 ${result?.total ?? 0} 个节点${result?.truncated ? '（已按关键字筛选）' : ''}`
+      : `没有匹配的节点（服务端共注册 ${result?.total ?? 0} 个）`;
+    callback(items.map((item) => ({ ...item, value: item.node })));
+  } catch (cause) {
+    // 拉不到候选不是致命错误：输入框仍然是自由文本，照样能填。
+    // 但要说清为什么没有建议，否则用户会以为「这个服没有权限节点」。
+    permissionSuggestions.value = [];
+    permissionCatalogNote.value = `读不到节点目录：${describeApiError(toApiError(cause))}`;
+    callback([]);
+  } finally {
+    permissionSearching.value = false;
+  }
+}
 
 async function setPermission(permission: string, value: boolean | null): Promise<void> {
   busy.value = `perm:${permission}`;
@@ -190,12 +229,32 @@ function parentName(row: unknown): string {
           </template>
 
           <div v-if="canManage" class="lp-add">
-            <el-input
+            <!--
+              候选来自服务端插件注册的权限（见 permissionCatalog）。
+              不用 el-input 是因为纯文本只能盲敲，而敲错的节点 LuckPerms 会照存、
+              只是永远不生效 —— 界面上看不出区别。
+            -->
+            <el-autocomplete
               v-model="newPermission"
-              placeholder="权限节点，例如 essentials.fly"
-              class="kp-mono"
+              :fetch-suggestions="fetchPermissionSuggestions"
+              :debounce="250"
+              :trigger-on-focus="true"
+              value-key="value"
+              clearable
+              placeholder="权限节点，输入即搜（如 cmi. / essentials.）"
+              class="kp-mono lp-add__input"
               @keyup.enter="addPermission"
-            />
+            >
+              <template #default="{ item }">
+                <div class="lp-suggestion">
+                  <span class="kp-mono lp-suggestion__node">{{ item.node }}</span>
+                  <span v-if="item.plugin" class="lp-suggestion__plugin">{{ item.plugin }}</span>
+                  <span v-if="item.description" class="lp-suggestion__desc">
+                    {{ item.description }}
+                  </span>
+                </div>
+              </template>
+            </el-autocomplete>
             <el-select v-model="newPermissionValue" style="width: 110px">
               <el-option label="true" :value="true" />
               <el-option label="false" :value="false" />
@@ -203,6 +262,10 @@ function parentName(row: unknown): string {
             <el-button type="primary" :icon="Plus" :loading="busy.startsWith('perm:')" @click="addPermission">
               添加
             </el-button>
+          </div>
+
+          <div v-if="canManage && permissionCatalogNote" class="lp-hint kp-text-muted">
+            {{ permissionCatalogNote }}
           </div>
 
           <el-table :data="group.permissions ?? []" size="small" max-height="340" empty-text="没有权限节点">
@@ -363,6 +426,48 @@ function parentName(row: unknown): string {
   gap: 8px;
   margin-bottom: 10px;
   flex-wrap: wrap;
+}
+
+/* el-autocomplete 默认是 inline-block，不会跟着 flex 撑开 */
+.lp-add__input {
+  flex: 1;
+  min-width: 260px;
+}
+
+.lp-hint {
+  margin: -4px 0 10px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.lp-suggestion {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.lp-suggestion__node {
+  flex: 0 0 auto;
+}
+
+.lp-suggestion__plugin {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  font-size: 11px;
+  line-height: 16px;
+  border-radius: 3px;
+  background: var(--el-fill-color);
+  color: var(--el-text-color-secondary);
+}
+
+.lp-suggestion__desc {
+  flex: 1 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 
 .lp-inline-btn {

@@ -54,6 +54,45 @@ public final class LpModels {
         public int weight;
     }
 
+    /**
+     * 权限目录里的一条：这个服务端上**存在**这个权限节点。
+     *
+     * <p>来源是 {@code Bukkit.getPluginManager().getPermissions()} —— 各插件启动时
+     * 注册进来的权限。它是判断「某个节点到底存不存在」的权威依据：手敲一个没人注册过的
+     * 节点，LuckPerms 会照样存下来，但它永远不会生效，而管理员从界面上看不出区别。
+     *
+     * <p>刻意不含任何 LuckPerms 类型 —— 这个目录跟 LP 没关系，没装 LP 也拿得到。
+     */
+    public static final class LpPermissionInfo {
+        public String node;
+        public String description;
+        public String defaultValue;
+        /** 注册它的插件名（CMI / LuckPerms / …），null 表示拿不到。 */
+        public String plugin;
+
+        public LpPermissionInfo(String node, String description, String defaultValue, String plugin) {
+            this.node = node;
+            this.description = description;
+            this.defaultValue = defaultValue;
+            this.plugin = plugin;
+        }
+    }
+
+    /** 权限目录的查询结果。 */
+    public static final class LpPermissionCatalog {
+        public List<LpPermissionInfo> items;
+        /** 过滤之前服务端注册的权限总数。 */
+        public int total;
+        /** 是否因为 limit 被截断。 */
+        public boolean truncated;
+
+        public LpPermissionCatalog(List<LpPermissionInfo> items, int total, boolean truncated) {
+            this.items = items;
+            this.total = total;
+            this.truncated = truncated;
+        }
+    }
+
     public static final class LpGroup {
         public String name;
         public String displayName;

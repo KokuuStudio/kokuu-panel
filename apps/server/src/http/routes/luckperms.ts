@@ -226,6 +226,30 @@ export function registerLuckPermsRoutes(app: FastifyInstance, ctx: AppContext): 
     },
   );
 
+  // ── 权限目录 ───────────────────────────────────────────────
+
+  /**
+   * 这个节点上**存在**哪些权限节点（只读，给界面做候选）。
+   *
+   * 有了它，加权限时才不用盲敲 —— 敲一个没人注册过的节点，LuckPerms 会照样存下来，
+   * 但它永远不会生效，而管理员从界面上看不出区别。
+   */
+  app.get<{ Params: { nodeId: string } }>(`${prefix}/permissions`, async (request) => {
+    requirePermission(request, 'luckperms.view');
+    const query = request.query as Record<string, unknown>;
+
+    const q = typeof query.q === 'string' && query.q.trim() ? query.q.trim().slice(0, 64) : undefined;
+    const parsedLimit = typeof query.limit === 'string' ? Number.parseInt(query.limit, 10) : Number.NaN;
+    const limit = Number.isFinite(parsedLimit)
+      ? Math.min(Math.max(parsedLimit, 1), 1000)
+      : undefined;
+
+    return callAgent(ctx, request.params.nodeId, 'luckperms.permissions.catalog', {
+      ...(q ? { query: q } : {}),
+      ...(limit === undefined ? {} : { limit }),
+    });
+  });
+
   // ── 组 ─────────────────────────────────────────────────────
 
   app.get<{ Params: { nodeId: string } }>(`${prefix}/groups`, async (request) => {

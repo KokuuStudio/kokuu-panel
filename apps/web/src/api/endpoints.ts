@@ -26,11 +26,14 @@ import type {
   EconomyAdjustResult,
   EconomyConfig,
   EconomyStats,
+  EconomyStatus,
+  GameCurrencyBalance,
   GameCurrencyPayload,
   GameCurrencyResult,
   LedgerEntry,
   LoginResult,
   LpGroup,
+  LpPermissionCatalog,
   LpUser,
   MeResult,
   MetricsResult,
@@ -660,6 +663,20 @@ export const luckpermsApi = {
       { method: 'POST', body: { prefix, suffix } },
     );
   },
+
+  /**
+   * 这个节点上**存在**哪些权限节点（给输入框做候选，只读）。
+   *
+   * 来源是服务端各插件注册的权限。有了它，加权限时不用盲敲 ——
+   * 敲一个没人注册过的节点 LuckPerms 会照存，但永远不会生效，
+   * 而管理员从界面上看不出区别。
+   */
+  permissionCatalog(nodeId: string, query: { q?: string; limit?: number } = {}) {
+    return request<LpPermissionCatalog>(
+      `/luckperms/nodes/${encodeURIComponent(nodeId)}/permissions`,
+      { query: { ...query } },
+    );
+  },
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -667,6 +684,24 @@ export const luckpermsApi = {
 // ─────────────────────────────────────────────────────────────
 
 export const economyApi = {
+  /**
+   * 经济模块现状。**永远成功**，用它决定页面怎么渲染。
+   *
+   * 不要靠「哪个请求 501 了」去猜处境：默认部署下平台不持有积分账本，
+   * 读账本的接口一律 501，那是设计决定。用这个接口区分
+   * 「站点积分走外部账本」和「游戏内货币始终可用」。
+   */
+  status() {
+    return request<EconomyStatus>('/economy/status');
+  },
+
+  /** 某玩家在某节点上的游戏内余额（Vault）。余额是每个服务端各自一份的。 */
+  balance(nodeId: string, uuid: string) {
+    return request<GameCurrencyBalance>('/economy/balance', {
+      query: { nodeId, uuid },
+    });
+  },
+
   async accounts(query: { kw?: string; page?: number; size?: number } = {}): Promise<PageResult<EconomyAccount>> {
     const page = query.page ?? 1;
     const size = query.size ?? 20;

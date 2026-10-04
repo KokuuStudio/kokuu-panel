@@ -97,6 +97,13 @@ export const ServerToAgentParamSchemas = {
   'whitelist.list': z.object({}).strict(),
   'whitelist.setEnabled': z.object({ value: z.boolean() }).strict(),
 
+  'luckperms.permissions.catalog': z
+    .object({
+      query: z.string().max(64).optional(),
+      limit: z.number().int().min(1).max(1000).optional(),
+    })
+    .strict(),
+
   'luckperms.user.get': z
     .object({ uuid: Uuid, name: PlayerName.optional() })
     .strict(),
