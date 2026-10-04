@@ -1,0 +1,34 @@
+name: KokuuAgent
+version: 1.0.0
+main: com.kokuustudio.kokuupanel.agent.KokuuAgentPlugin
+
+# 1.12.2 用 Properties 加载 plugin.yml，会忽略不认识的键；
+# 1.13+ 需要它才肯加载新插件。写 1.13 是唯一同时满足两头的值。
+# 见 docs/ARCHITECTURE.md §4.2 —— 不要改成别的值。
+api-version: '1.13'
+
+authors: [KokuuStudio]
+description: KokuuPanel 节点代理：把服务端接进管理平台（控制台 / 玩家 / 封禁 / 白名单 / 权限 / 经济）
+website: https://github.com/KokuuStudio
+
+# 软依赖：没装就不声明对应 capability，平台前端自动隐藏入口。
+# 绝不硬依赖 —— 没装 LuckPerms 的服务器也要能连上平台。
+# 见 docs/ARCHITECTURE.md §4.3。
+softdepend:
+  - LuckPerms
+  - Vault
+
+commands:
+  kp:
+    description: KokuuPanel Agent 管理命令
+    usage: /kp <status|reload|info|ban|unban|mute|unmute>
+    aliases: [kokuuagent, kokuupanel]
+    permission-message: 你没有权限使用该命令
+
+permissions:
+  kokuuagent.admin:
+    description: 使用 /kp 的管理子命令（reload / ban / unban / mute / unmute）
+    default: op
+  kokuuagent.use:
+    description: 使用 /kp 的查询子命令（status / info）
+    default: op

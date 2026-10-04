@@ -1,0 +1,30 @@
+{
+  "name": "kokuu-panel",
+  "version": "1.0.0",
+  "private": true,
+  "description": "综合性 Minecraft Java 版服务器管理平台",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @kokuu/server dev",
+    "dev:web": "pnpm --filter @kokuu/web dev",
+    "build": "pnpm --filter @kokuu/web build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm --filter @kokuu/server test",
+    "verify": "node tools/verify-e2e.mjs --user admin",
+    "verify:static": "node tools/verify-static.mjs",
+    "verify:secrets": "node tools/scan-secrets.mjs",
+    "start": "pnpm --filter @kokuu/server start",
+    "mock-agent": "node tools/mock-agent.mjs",
+    "characters": "node tools/import-characters.mjs",
+    "seed": "node apps/server/src/cli/seed.ts"
+  },
+  "devDependencies": {
+    "@kokuu/protocol": "workspace:*",
+    "ws": "^8.18.0"
+  },
+  "packageManager": "pnpm@11.7.0"
+}

@@ -1,0 +1,42 @@
+# KokuuPanel
+#
+# 只需要一个容器。SQLite 是 Node 内置模块（node:sqlite），
+# 所以没有 MySQL、没有 Redis、没有编译工具链。
+# 对比 kokuu-credit-admin 要跑 mysql + redis + 中间件三个容器，
+# 这里的部署面小得多 —— 代价是单机上限，多实例部署要换 MySQL。
+
+services:
+  panel:
+    build: .
+    image: kokuu-panel:1.0.0
+    container_name: kokuu-panel
+    restart: unless-stopped
+
+    # 只绑本机。公网访问必须前置 nginx/Caddy 做 TLS ——
+    # 节点密钥在握手时是明文传输的，直接暴露等于把密钥交出去。
+    ports:
+      - '127.0.0.1:8787:8787'
+
+    environment:
+      # 多实例部署时**必须**显式设置，否则各实例各自随机生成，
+      # 表现为「刷新页面就随机被登出」。
+      KP_SESSION_SECRET: ${KP_SESSION_SECRET:?必须在 .env 里设置 KP_SESSION_SECRET}
+
+      # 首次启动用于播种管理员。账号创建后这两项就不再起作用。
+      KP_ADMIN_USER: ${KP_ADMIN_USER:-admin}
+      KP_ADMIN_PASSWORD: ${KP_ADMIN_PASSWORD:?必须在 .env 里设置 KP_ADMIN_PASSWORD}
+
+      KP_LOG_LEVEL: ${KP_LOG_LEVEL:-info}
+
+    volumes:
+      # SQLite 库 + 会话密钥。这是全部需要备份的东西。
+      - kokuu-data:/data
+
+    # 内存不大，留个上限免得异常时把宿主机吃满。
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+volumes:
+  kokuu-data:

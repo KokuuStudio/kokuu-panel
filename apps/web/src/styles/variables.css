@@ -1,0 +1,74 @@
+/* KokuuPanel 主题变量。暗色走 Element Plus 官方暗色变量，这里只补平台自己的语义色。 */
+
+:root {
+  /* 状态色（节点在线 / 离线 / 停用）*/
+  --kp-online: #16a34a;
+  --kp-offline: #dc2626;
+  --kp-disabled: #94a3b8;
+  --kp-warn: #d97706;
+
+  /* TPS 三档 */
+  --kp-tps-ok: #16a34a;
+  --kp-tps-warn: #d97706;
+  --kp-tps-bad: #dc2626;
+
+  --kp-radius: 10px;
+  --kp-gap: 16px;
+  --kp-sidebar-width: 216px;
+  --kp-sidebar-width-collapsed: 64px;
+  --kp-header-height: 56px;
+
+  --kp-surface: var(--el-bg-color);
+  --kp-surface-muted: var(--el-fill-color-light);
+  --kp-border: var(--el-border-color-light);
+  --kp-text-muted: var(--el-text-color-secondary);
+  --kp-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+}
+
+html.dark {
+  --kp-online: #4ade80;
+  --kp-offline: #f87171;
+  --kp-disabled: #94a3b8;
+  --kp-warn: #fbbf24;
+
+  --kp-tps-ok: #4ade80;
+  --kp-tps-warn: #fbbf24;
+  --kp-tps-bad: #f87171;
+}
+
+/* 控制台 / 日志行的统一等宽样式 */
+.kp-mono {
+  font-family: var(--kp-mono);
+}
+
+.kp-text-muted {
+  color: var(--kp-text-muted);
+}
+
+.kp-nowrap {
+  white-space: nowrap;
+}
+
+/* 状态点 */
+.kp-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+  background: var(--kp-disabled);
+}
+
+.kp-dot--online {
+  background: var(--kp-online);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--kp-online) 25%, transparent);
+}
+
+.kp-dot--offline {
+  background: var(--kp-offline);
+}
+
+.kp-dot--disabled {
+  background: var(--kp-disabled);
+}

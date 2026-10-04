@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.kokuustudio</groupId>
+  <artifactId>kokuu-legacy-fix</artifactId>
+  <version>1.0.0</version>
+  <packaging>jar</packaging>
+
+  <name>KokuuLegacyFix</name>
+  <description>为 1.12.2 补全 CMILib 缺失的材质映射（修 SkullMeta 异常与物品价值表）</description>
+
+  <!--
+    这个插件只有一个用途：让 CMILib 1.6+ 在 Minecraft 1.12.2 上能把材质解析对。
+
+    构建约定与 agent/ 保持一致（见 agent/pom.xml 与 docs/ARCHITECTURE.md §4）：
+      - 字节码必须是 Java 8：1.12.2 服务端只能跑 Java 8，字节码兼容是单向的；
+      - 用 release 8 压下来；JDK 25 上的 "source value 8 is obsolete" 警告
+        用 -Xlint:-options 消掉，**不要**为了消警告把目标版本调高。
+
+    依赖只有一个，而且是 provided：Bukkit API 由服务端提供，不能打进 jar
+    （打进去会和别的插件、以及服务端自己撞车）。
+  -->
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <maven.compiler.release>8</maven.compiler.release>
+  </properties>
+
+  <repositories>
+    <!--
+      Spigot 的 API 制品不在 Maven Central，只在它自己的 snapshot 仓库里。
+      SpigotMC 没有把制品发布到中央仓库是历史原因，不是我们的选择。
+    -->
+    <repository>
+      <id>spigot-repo</id>
+      <url>https://hub.spigotmc.org/nexus/content/repositories/snapshots/</url>
+    </repository>
+  </repositories>
+
+  <dependencies>
+    <!--
+      刻意钉在 1.12.2：这就是本插件的目标版本。
+
+      顺带一提：源码里的 1.13+ 材质名全部是**字符串字面量**，
+      没有引用任何 1.13+ 的 Material 枚举常量 —— 所以它其实能用任意版本的
+      Bukkit API 编译通过。钉住版本是为了让「目标平台」这件事写在明面上，
+      也避免有人误以为它能在 1.13+ 上跑（在 1.13+ 上 CMILib 本来就正常，
+      本插件会什么都不做，见 KokuuLegacyFix 的类注释）。
+    -->
+    <dependency>
+      <groupId>org.spigotmc</groupId>
+      <artifactId>spigot-api</artifactId>
+      <version>1.12.2-R0.1-SNAPSHOT</version>
+      <scope>provided</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>kokuu-legacy-fix-1.0.0</finalName>
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+        <filtering>false</filtering>
+      </resource>
+    </resources>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+        <configuration>
+          <release>8</release>
+          <encoding>UTF-8</encoding>
+          <compilerArgs>
+            <arg>-Xlint:-options</arg>
+          </compilerArgs>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

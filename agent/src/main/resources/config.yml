@@ -1,0 +1,107 @@
+# ============================================================================
+#  KokuuPanel Agent 配置
+#
+#  这个文件在插件首次启动时生成。改完用 /kp reload 重载；
+#  改 panelUrl / nodeId / secret 会断开当前连接并按新配置重连。
+#
+#  协议与行为细节见项目里的 docs/PROTOCOL.md 与 docs/ARCHITECTURE.md。
+# ============================================================================
+
+# 平台地址。插件会主动外连 {panelUrl}/agent。
+#   - 可以写 ws:// / wss:// / http:// / https://，插件会自动转换并补 /agent 路径
+#   - 生产环境必须用 wss://：节点密钥在 hello 帧里明文传输，走 ws:// 等于裸奔
+panelUrl: "ws://127.0.0.1:8787"
+
+# 平台创建节点时生成。密钥只在创建时显示一次，丢了只能在平台上轮换。
+nodeId: ""
+secret: ""
+
+# 只读模式：true 时所有写操作（控制台 / 踢人 / 封禁 / 权限 / 经济）一律回 READ_ONLY。
+# 用来「先把节点接进平台看数据，确认没问题再放开操作」。
+readOnly: false
+
+# server.info 上报的服务器显示名。留空表示自动探测：
+#   先试 Bukkit.getServerName()（Spigot 的 server-name），拿不到就退回品牌名。
+# Paper 较新版本删掉了那个 API，想显示成「生存服」就在这里写。
+serverName: ""
+
+heartbeat:
+  # 心跳间隔（秒）。平台会在 hello 响应里下发 heartbeatIntervalMs，以那个为准；
+  # 这里只是平台没下发时的兜底值，也是下面超时判定的基准。
+  intervalSeconds: 15
+  # 多久没收到平台的任何一帧就判定连接「半开」（TCP 已断但对端未感知，
+  # 表现为平台显示在线但所有操作超时），主动断开重连。
+  # 建议是 intervalSeconds 的 3 倍左右：网络抖一下不要误判。
+  timeoutSeconds: 45
+
+reconnect:
+  # 指数退避：第 1 次等 minBackoffSeconds，之后翻倍，封顶 maxBackoffSeconds。
+  minBackoffSeconds: 1
+  # 协议要求退避上限 5 分钟（UNAUTHORIZED 时也不要更激进，否则像在爆破平台）。
+  maxBackoffSeconds: 300
+  # 退避抖动百分比。多台节点同时掉线时避免齐刷刷重连打爆平台。
+  jitterPercent: 20
+
+rpc:
+  # 单个 RPC 在服务端主线程上的执行上限（毫秒）。
+  # 主线程卡住时 WS 线程不能跟着永久阻塞 —— 超时回 TIMEOUT，平台看到明确错误。
+  # 平台侧默认 RPC 超时是 10s，这里的值必须小于它。
+  mainThreadTimeoutMs: 8000
+  # Agent → 平台请求（/kp info 这类）的超时（毫秒）。
+  outboundTimeoutMs: 10000
+
+events:
+  # 逐类开关。事件不保证送达、不重传，只用于「观察」而非「记账」。
+  join: true
+  quit: true
+  chat: true
+  death: true
+  command: true
+  # 全量转发控制台日志。默认关闭：活动服务器上会打满带宽（协议 §7）。
+  # 打开后单连接每秒最多 console.maxLinesPerSecond 行，超出丢弃并在下一条带 dropped。
+  console: false
+  # 定时上报 server.metrics 事件。
+  metrics: true
+
+metrics:
+  # server.metrics 事件的上报间隔（秒）。
+  metricsIntervalSeconds: 10
+  # Paper 的 getTPS() / getAverageTickTime() 探测不到时（例如 1.12.2 Spigot），
+  # 是否启用 tick 计数的降级实现。
+  # 这是**真实测量值**（每秒数 tick），不是编造 20.0；观测不足 10 秒依然返回 null。
+  # 不想要降级值就改 false —— 那样取不到就一律回 null。
+  tickCounterFallback: true
+
+console:
+  # 单条 console.execute 最多回显多少行，超出截断。
+  maxOutputLines: 200
+  # console.line 事件单连接每秒最多发多少行。
+  maxLinesPerSecond: 200
+
+punish:
+  # 平台不可达 / 快照过期时怎么处理登录：
+  #   false（默认，fail-open）：放进来。漏放一个该封的人 < 把全服玩家挡在门外
+  #   true （fail-closed）：拦下来。不接受任何漏网，但要接受误拦
+  # 这是刻意的取舍，见 docs/ARCHITECTURE.md §3。
+  failClosed: false
+  # 快照多久没更新（分钟）就在日志里打 WARN。0 表示不警告。
+  staleWarnMinutes: 30
+  # 登录被拦时给玩家的提示。可用占位符：
+  #   ${reason}  封禁原因
+  #   ${expires} 解封时间（永久封禁时为空字符串）
+  # 支持 & 颜色代码。
+  banMessage: "&c你已被本服务器封禁：&f${reason}${expires}"
+  # fail-closed 生效时给玩家的提示。
+  unavailableMessage: "&c本服务器暂时无法校验封禁状态，请稍后再试"
+  # 禁言时给玩家的提示。可用 ${reason} / ${expires}。
+  muteMessage: "&c你已被禁言：&f${reason}${expires}"
+
+economy:
+  # 经济幂等键（eventId）缓存 TTL（小时）。协议要求 >= 24：
+  # 网络的重复投递绝不能变成发两遍钱。
+  idempotencyTtlHours: 24
+
+command:
+  # /kp ban / /kp mute 不带时长时的默认时长（秒）。0 表示永久。
+  # 例如想默认封 1 天就写 86400。
+  defaultBanSeconds: 0

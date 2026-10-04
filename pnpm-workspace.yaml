@@ -1,0 +1,21 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# pnpm 11 起，以下设置不再从 package.json 的 "pnpm" 字段读取，
+# 必须放在这里。少了 allowBuilds，esbuild 的平台二进制不会被安装，
+# 表现为 `vite: not found` / `Cannot find module 'esbuild'`。
+allowBuilds:
+  esbuild: true
+  # vue-demi 的 postinstall 在 Vue 2/3 之间切 shim。Vue 3 下产物本来就是对的，
+  # 不跑也能用 —— 但不允许它跑会让 `pnpm install` 以 exit 1 结束
+  # （ERR_PNPM_IGNORED_BUILDS）。「装成功了但退出码非 0」会挂掉 CI，
+  # 更糟的是它会训练人忽略这个错误，所以直接允许。
+  vue-demi: true
+
+# pnpm 默认用符号链接 + 硬链接组织 node_modules。在部分受限环境
+# （Windows 沙箱、某些网络盘）下链接会静默失败，症状是 node_modules
+# 里缺少传递依赖且没有 .bin 目录。hoisted + copy 用真实拷贝，
+# 代价是安装慢一些、占盘多一些，换来的是确定性。
+nodeLinker: hoisted
+packageImportMethod: copy

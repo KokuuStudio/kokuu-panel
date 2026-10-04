@@ -1,0 +1,30 @@
+name: KokuuLegacyFix
+version: 1.0.0
+main: com.kokuustudio.kokuupanel.legacyfix.KokuuLegacyFix
+description: 为 1.12.2 补全 CMILib 缺失的材质映射（修 SkullMeta 异常与物品价值表）
+author: KokuuStudio
+website: https://github.com/KokuuStudio
+
+# 1.12.2 用 Properties 读 plugin.yml，会忽略不认识的键；
+# 1.13+ 又需要它才肯加载插件。'1.13' 是唯一同时满足两头的值 ——
+# 和 agent/ 的处理保持一致（见 agent/src/main/resources/plugin.yml）。
+api-version: '1.13'
+
+# ⚠ 加载顺序是**功能正确性的一部分**，不要改动。
+#
+# 时间线必须是：
+#
+#   CMILib.onEnable   跑 updateMaterial() + ItemManager.load()，此时 mat 与 byName 都是残缺的
+#   本插件 onEnable   写 legacyName + 重跑 load() + 清头颅缓存      ← 必须夹在中间
+#   CMI.onEnable      读 Worth.yml / 家 / kit                     ← 这时才是对的
+#
+# 所以：
+#   depend: [CMILib]   要它先把 updateMaterial() 跑完（否则我们写的值会被它重置）
+#   loadbefore: [CMI]  要赶在 CMI 读价值表之前
+#
+# 如果改成 loadbefore: [CMILib]（想更早跑），我们写入的值会被随后的
+# updateMaterial() 覆盖掉 —— 这是实测踩过的坑，不是推测。
+depend:
+  - CMILib
+loadbefore:
+  - CMI

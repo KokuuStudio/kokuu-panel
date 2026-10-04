@@ -1,0 +1,197 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.kokuustudio</groupId>
+  <artifactId>kokuu-agent</artifactId>
+  <version>1.0.0</version>
+  <packaging>jar</packaging>
+
+  <name>KokuuAgent</name>
+  <description>KokuuPanel Minecraft 服务端节点代理插件</description>
+
+  <!--
+    跨版本策略见 docs/ARCHITECTURE.md §4。
+
+    §4.1 字节码必须是 Java 8：字节码兼容是单向的，Java 8 字节码能在所有更高运行时上跑。
+    构建机是 JDK 25，所以用 release 8 压下去。**不要**为了消警告改成 17。
+
+    §4.3 依赖分两类：
+      - 服务端自带 / 十年稳定的 API  -> provided，不进 jar
+      - Java 8 运行时没有的东西      -> shade 进 jar（并重定位包名，避免和别的插件撞车）
+  -->
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <maven.compiler.release>8</maven.compiler.release>
+    <paper.api.version>1.20.6-R0.1-SNAPSHOT</paper.api.version>
+    <websocket.version>1.5.7</websocket.version>
+    <gson.version>2.11.0</gson.version>
+    <slf4j.version>1.7.36</slf4j.version>
+  </properties>
+
+  <repositories>
+    <repository>
+      <id>papermc</id>
+      <url>https://repo.papermc.io/repository/maven-public/</url>
+    </repository>
+    <repository>
+      <id>jitpack.io</id>
+      <url>https://jitpack.io</url>
+    </repository>
+  </repositories>
+
+  <dependencies>
+    <!-- 服务端自带，只用于编译 -->
+    <dependency>
+      <groupId>io.papermc.paper</groupId>
+      <artifactId>paper-api</artifactId>
+      <version>${paper.api.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!-- softdepend：没装 Vault 就不声明 economy capability -->
+    <dependency>
+      <groupId>com.github.MilkBowl</groupId>
+      <artifactId>VaultAPI</artifactId>
+      <version>1.7</version>
+      <scope>provided</scope>
+      <exclusions>
+        <exclusion>
+          <groupId>org.bukkit</groupId>
+          <artifactId>bukkit</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <!--
+      LuckPerms API。坐标是 net.luckperms:api（不是 net.luckperms:luckperms-api，后者不存在）。
+      5.x 是 Java 8 字节码且覆盖 MC 1.8+；4.x 的 API 完全不同，不支持（见 §4.3）。
+    -->
+    <dependency>
+      <groupId>net.luckperms</groupId>
+      <artifactId>api</artifactId>
+      <version>5.4</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!-- Java 8 没有内置 WebSocket 客户端 -> shade -->
+    <dependency>
+      <groupId>org.java-websocket</groupId>
+      <artifactId>Java-WebSocket</artifactId>
+      <version>${websocket.version}</version>
+    </dependency>
+
+    <!-- JSON 编解码 -> shade -->
+    <dependency>
+      <groupId>com.google.code.gson</groupId>
+      <artifactId>gson</artifactId>
+      <version>${gson.version}</version>
+    </dependency>
+
+    <!--
+      Java-WebSocket 用 slf4j 打日志。服务端不保证有 slf4j，所以连 api 带 nop 绑定一起
+      shade + 重定位；不加 nop 绑定的话 slf4j 会在控制台打一段 "Failed to load class
+      org.slf4j.impl.StaticLoggerBinder" 的噪音。
+    -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <version>${slf4j.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-nop</artifactId>
+      <version>${slf4j.version}</version>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <!-- 产物固定为 kokuu-agent-1.0.0.jar（不跟 shade 的默认版本号后缀） -->
+    <finalName>kokuu-agent-1.0.0</finalName>
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+        <filtering>false</filtering>
+      </resource>
+    </resources>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+        <configuration>
+          <release>8</release>
+          <encoding>UTF-8</encoding>
+          <compilerArgs>
+            <!--
+              JDK 25 上 release 8 会打 "source value 8 is obsolete" 警告。
+              警告本身是噪音（架构文档 §4.1 已经明确接受这个取舍），
+              用 -Xlint:-options 消掉，**不是**把目标版本调高。
+            -->
+            <arg>-Xlint:-options</arg>
+          </compilerArgs>
+        </configuration>
+      </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>3.5.3</version>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+              <artifactSet>
+                <includes>
+                  <include>org.java-websocket:Java-WebSocket</include>
+                  <include>com.google.code.gson:gson</include>
+                  <include>org.slf4j:slf4j-api</include>
+                  <include>org.slf4j:slf4j-nop</include>
+                </includes>
+              </artifactSet>
+              <!--
+                重定位：插件 jar 和服务端共用 classpath，别的插件也可能 shade 了
+                Gson / slf4j。带上自己的私有包名是唯一不会互相踩的做法。
+              -->
+              <relocations>
+                <relocation>
+                  <pattern>com.google.gson</pattern>
+                  <shadedPattern>com.kokuustudio.kokuupanel.libs.gson</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>org.java_websocket</pattern>
+                  <shadedPattern>com.kokuustudio.kokuupanel.libs.websocket</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>org.slf4j</pattern>
+                  <shadedPattern>com.kokuustudio.kokuupanel.libs.slf4j</shadedPattern>
+                </relocation>
+              </relocations>
+              <filters>
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                    <exclude>META-INF/MANIFEST.MF</exclude>
+                    <exclude>META-INF/LICENSE*</exclude>
+                    <exclude>META-INF/NOTICE*</exclude>
+                    <exclude>module-info.class</exclude>
+                    <exclude>META-INF/versions/*/module-info.class</exclude>
+                  </excludes>
+                </filter>
+              </filters>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
