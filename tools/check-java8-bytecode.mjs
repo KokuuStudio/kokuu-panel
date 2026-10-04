@@ -31,6 +31,7 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_TARGETS = [
   join(repoRoot, 'agent', 'target', 'kokuu-agent-1.0.0.jar'),
   join(repoRoot, 'legacy-fix', 'target', 'kokuu-legacy-fix-1.0.0.jar'),
+  join(repoRoot, 'scoreboard', 'target', 'kokuu-scoreboard-1.0.0.jar'),
 ];
 
 // ── 最小 ZIP 读取（只为了取 .class 条目，不想为此引依赖）──────────────

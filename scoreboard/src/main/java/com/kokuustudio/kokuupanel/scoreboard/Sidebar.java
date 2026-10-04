@@ -4,11 +4,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.logging.Logger;
 
-import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.scoreboard.DisplaySlot;
 import org.bukkit.scoreboard.Objective;
 import org.bukkit.scoreboard.Scoreboard;
+import org.bukkit.scoreboard.ScoreboardManager;
 import org.bukkit.scoreboard.Team;
 
 /**
@@ -38,6 +38,10 @@ import org.bukkit.scoreboard.Team;
  *   <li>1.13+：各 <b>64</b> 个字符</li>
  * </ul>
  *
+ * 这不是「大概」：反汇编 CatServer 1.12.2 的 jar 可以看到 CraftTeam 里
+ * 就是 {@code Validate.isTrue(prefix.length() <= 16, "...limit of 16 characters")}，
+ * 超了直接抛 {@code IllegalArgumentException}。
+ *
  * 而且算的是**原始字符串长度，包含 {@code §} 颜色码**。
  * {@code §7余额: §f1,234} 这种看着很短的行走完颜色码就已经 16 个字符了 ——
  * 1.12 上不做处理就会直接抛 {@code IllegalArgumentException}。
@@ -58,10 +62,34 @@ final class Sidebar {
     private static final int PREFIX_LIMIT_MODERN = 64;
     private static final int SUFFIX_LIMIT_MODERN = 64;
 
+    /**
+     * 标题上限。
+     *
+     * <h2>为什么 legacy 也是 32，而不是 16</h2>
+     *
+     * 反汇编 CatServer 1.12.2 的 jar 可以看到，CraftObjective#setDisplayName
+     * 的校验是 {@code displayName.length() <= 32} —— 也就是说 1.12.2 服务端
+     * **接受** 32 个字符的标题。
+     *
+     * 我原来把 legacy 的标题上限设成 16，理由是「1.12 大概只显示得下 16」。
+     * 那个理由是**没有依据的**：16 是 prefix/suffix 的上限（CraftTeam 里明确校验），
+     * 跟标题不是一回事。按 16 截断的后果是：用户配了 20 个字符的标题时，
+     * 服务端明明能收下，却被我们砍掉 4 个字符。
+     *
+     * 所以这里用**服务端真正强制的上限**。至于客户端渲染宽度有限、
+     * 长标题可能显示不全 —— 那是观感问题，由 config.yml 的注释提醒，
+     * 不该由代码替他决定。
+     */
+    private static final int TITLE_LIMIT_LEGACY = 32;
+    private static final int TITLE_LIMIT_MODERN = 32;
+
     private final Scoreboard board;
     private final Objective objective;
     private final List<Team> teams = new ArrayList<Team>();
     private final Logger logger;
+
+    /** 本服务端是不是 1.12 及以下（决定 prefix/suffix/标题的上限）。 */
+    private final boolean legacy;
 
     private final int prefixLimit;
     private final int suffixLimit;
@@ -69,20 +97,29 @@ final class Sidebar {
     /** 哪些行的中间段被丢过（只警告一次，避免每秒刷屏）。 */
     private final boolean[] truncated;
 
-    Sidebar(Logger logger, String objectiveName, String title, List<String> lines) {
+    /**
+     * @param manager 记分板管理器。**由调用方传入而不是在这里调
+     *                {@code Bukkit.getScoreboardManager()}**：那个静态方法在服务端
+     *                启动早期会返回 null，而且它让本类没法脱离服务端测试 ——
+     *                而 1.12 的 16 字符切分逻辑恰恰是最需要被测试固化的部分。
+     * @param legacy  是不是 1.12 及以下。同样由调用方算好传进来，
+     *                这样判定「哪个版本」的地方只有一处。
+     */
+    Sidebar(Logger logger, ScoreboardManager manager, boolean legacy,
+            String objectiveName, String title, List<String> lines) {
         this.logger = logger;
+        this.legacy = legacy;
 
-        boolean legacy = isLegacy();
         this.prefixLimit = legacy ? PREFIX_LIMIT_LEGACY : PREFIX_LIMIT_MODERN;
         this.suffixLimit = legacy ? SUFFIX_LIMIT_LEGACY : SUFFIX_LIMIT_MODERN;
 
-        this.board = Bukkit.getScoreboardManager().getNewScoreboard();
+        this.board = manager.getNewScoreboard();
         this.objective = board.registerNewObjective(objectiveName, "dummy");
         objective.setDisplaySlot(DisplaySlot.SIDEBAR);
 
         // 标题也有上限：1.12 是 16，1.13+ 是 32。超了客户端会截断，这里先自己截，
         // 免得看起来像随机丢字。
-        objective.setDisplayName(truncate(title, legacy ? 16 : 32));
+        objective.setDisplayName(truncate(title, titleLimit(legacy)));
 
         this.truncated = new boolean[lines.size()];
 
@@ -116,6 +153,42 @@ final class Sidebar {
         }
     }
 
+    /**
+     * 注销这块板子 —— **这是让侧边栏从玩家屏幕上消失的唯一可靠办法**。
+     *
+     * <h2>为什么不能只把玩家换回主记分板</h2>
+     *
+     * 实测（1.12.2 服务端 + 真实客户端协议抓包）：{@code player.setScoreboard(main)}
+     * 之后服务端**一个包都不发**。原因是 CraftBukkit 的 setScoreboard 只按
+     * 「新板子里有哪些显示槽位」去通知，而主记分板上通常没有 sidebar objective，
+     * 于是它什么都不说 —— 客户端于是继续显示最后那一帧。
+     *
+     * 后果是玩家执行 {@code /kokuusb off} 之后，屏幕上侧边栏还在，
+     * 得等重连或别的插件覆盖。命令看起来「没用」。
+     *
+     * {@code Objective#unregister()} 走的是 NMS 的
+     * {@code ScoreboardServer.removeObjective}，它会**主动给所有正在看这块板子的
+     * 玩家**发「清除该槽位」的包 —— 这正是我们要的。
+     *
+     * 顺序很重要：必须**在把玩家换回主记分板之前**调用，否则那时玩家已经
+     * 不看这块板子了，清除包同样发不出去。
+     */
+    void dispose() {
+        try {
+            objective.unregister();
+        } catch (IllegalStateException alreadyUnregistered) {
+            // 服务端关停时可能已经清理过，重复注销是无害的。
+        }
+        for (Team team : teams) {
+            try {
+                team.unregister();
+            } catch (IllegalStateException alreadyUnregistered) {
+                // 同上
+            }
+        }
+        teams.clear();
+    }
+
     private void applyLine(int index, String text) {
         Team team = teams.get(index);
         String safe = text == null ? "" : text;
@@ -144,7 +217,7 @@ final class Sidebar {
         if (dropped && !truncated[index]) {
             truncated[index] = true;
             logger.warning("侧边栏第 " + (index + 1) + " 行太长，本服务端（"
-                    + (isLegacy() ? "1.12 及以下" : "1.13+") + "）每行上限是 "
+                    + (legacy ? "1.12 及以下" : "1.13+") + "）每行上限是 "
                     + (prefixLimit + suffixLimit) + " 个字符（含 § 颜色码），中间部分已被丢弃："
                     + ChatColor.stripColor(safe));
             logger.warning("  把这行写短一点，或者去掉一些颜色码。");
@@ -228,11 +301,11 @@ final class Sidebar {
      *
      * 按 {@code Bukkit.getBukkitVersion()} 的次版本号判断，例如
      * {@code "1.12.2-R0.1-SNAPSHOT"} → 12 ≤ 12 → legacy。
+     *
+     * <p>刻意不提供「无参版本」：那会让本类（以及调用它的 {@link BoardSettings}）
+     * 依赖 {@code Bukkit} 的静态状态，既没法脱离服务端测试，也会把
+     * 「解析版本号」这件事散到多处。版本号由插件在启用时读一次传进来。
      */
-    static boolean isLegacy() {
-        return isLegacy(Bukkit.getBukkitVersion());
-    }
-
     static boolean isLegacy(String bukkitVersion) {
         if (bukkitVersion == null) return false;
         String[] parts = bukkitVersion.split("[.\\-]");
@@ -243,5 +316,22 @@ final class Sidebar {
             // 拿不准就当新版（上限更宽松，最多是少显示一点，不会抛异常）
             return false;
         }
+    }
+
+    /**
+     * 一行的字符上限（prefix + suffix）。
+     *
+     * 给启动时的配置校验用 —— 校验必须和运行时**同一个口径**，
+     * 否则会出现「启动说没问题、运行起来却在丢字」。所以这里的返回值
+     * 直接从本类实际使用的上限算出来，而不是在别处再写一遍 32 / 128。
+     */
+    static int lineLimit(boolean legacy) {
+        return legacy ? PREFIX_LIMIT_LEGACY + SUFFIX_LIMIT_LEGACY
+                : PREFIX_LIMIT_MODERN + SUFFIX_LIMIT_MODERN;
+    }
+
+    /** 标题的字符上限。同上，与运行时的取值保持一致。 */
+    static int titleLimit(boolean legacy) {
+        return legacy ? TITLE_LIMIT_LEGACY : TITLE_LIMIT_MODERN;
     }
 }

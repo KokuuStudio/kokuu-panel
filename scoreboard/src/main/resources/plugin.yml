@@ -16,8 +16,8 @@ softdepend:
 
 commands:
   kokuusb:
-    description: 记分牌开关与重载
-    usage: /kokuusb <on|off|reload>
+    description: 记分牌开关、重载与自检
+    usage: /kokuusb <on|off|reload|verify> [玩家]
     aliases: [ksb, kscore]
 permissions:
   kokuusb.use:

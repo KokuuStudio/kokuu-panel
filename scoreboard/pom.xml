@@ -65,6 +65,22 @@
         </exclusion>
       </exclusions>
     </dependency>
+
+    <!--
+      单元测试。**只有一项真正需要它**：1.12 的 prefix/suffix 16 字符切分。
+      那是本插件唯一会「写错就抛 IllegalArgumentException」的地方，而它偏偏
+      只有在有玩家在线时才会被触发 —— 靠人工拿客户端去试太不可靠了。
+      这里的测试用假的 Scoreboard/Team 记录每次 setPrefix/setSuffix 的内容，
+      把「传给服务端的字符串永远不超限」这条不变量钉死。
+
+      test scope：不会进 jar，也不影响字节码目标。
+    -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>5.10.2</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>

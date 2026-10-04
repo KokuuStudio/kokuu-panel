@@ -79,6 +79,14 @@ jobs:
         run: mvn -B -DskipTests package
         working-directory: legacy-fix
 
+      # 这一步**不加** -DskipTests，和上面两个不一样：记分牌的测试用来钉住
+      # 1.12 的 prefix/suffix 16 字符切分（超了 CraftBukkit 会直接抛
+      # IllegalArgumentException），而那个 bug 只有玩家在线时才会暴露 ——
+      # 靠人工开客户端去试太不可靠，所以放进 CI。
+      - name: 构建并测试 KokuuScoreboard
+        run: mvn -B package
+        working-directory: scoreboard
+
       # 这一步是这个项目特有的：docs/ARCHITECTURE.md §4.1 要求字节码必须是 Java 8，
       # 但 JDK 编译时的 "source value 8 is obsolete" 警告一直在劝人把目标调高。
       # 1.12.2 服务端只能跑 Java 8，调高的后果是生产上 UnsupportedClassVersionError，
