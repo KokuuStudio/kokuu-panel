@@ -278,6 +278,29 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+      # ★ 构建期自检：把「镜像根本跑不起来」这类问题挡在构建阶段。
+      #   退出码 126（ENTRYPOINT 存在但不可执行）这类问题，
+      #   从「容器 Up 但接口无响应」里分辨出来极难 ——
+      #   容器起一下就退，日志是空的，看起来像随机故障。
+      #   在镜像内直接验证入口链路，问题会立刻变成一行明确的报错。
+      - name: 自检：镜像入口链路可用
+        run: |
+          set -e
+          echo "--- ENTRYPOINT / CMD ---"
+          docker inspect -f 'entrypoint={{json .Config.Entrypoint}} cmd={{json .Config.Cmd}} user={{.Config.User}}' \
+            kokuu-credit-admin:ci
+          echo "--- 入口文件与 tini ---"
+          docker run --rm --entrypoint sh kokuu-credit-admin:ci -c '
+            set -e
+            command -v tini
+            test -x /usr/local/bin/tini || { echo "tini 不可执行"; exit 1; }
+            test -f /app/server/src/index.js || { echo "缺 index.js"; exit 1; }
+            echo "node_modules 顶层:"; ls /app/server/node_modules | head -5
+            echo "前端产物:"; ls /app/web/dist
+            echo "当前用户: $(id)"
+            echo "数据目录可写: $(touch /data/.probe && echo YES || echo NO)"
+          '
+
       - name: 冒烟：容器能起来且 /api/ping 有响应
         run: |
           # ★ 显式建一个属主匹配的 named volume，而不是让 docker run

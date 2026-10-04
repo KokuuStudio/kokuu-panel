@@ -51,9 +51,18 @@ WORKDIR /app/server
 #   而**卷挂载会遮蔽镜像内的属主** —— 上面 chown 的结果等于白做。
 #   所以用 named volume 的场景必须在首次创建时指定属主，
 #   两条路径见 INSTALL.md；compose 里已用 kokuu-data 并处理好。
+# ★ tini 的路径必须用「构建时实测」的结果，不能照抄文档。
+#   写成 /sbin/tini 时，容器直接以退出码 126 挂掉 —— 126 在 Docker 里的
+#   含义是「ENTRYPOINT 指向的文件存在但不可执行」。
+#   alpine 各版本 tini 的落点并不一致（/sbin 与 /usr/bin 都出现过），
+#   与其赌一个路径，不如构建时把它解析出来再写进 ENV。
 RUN apk add --no-cache tini \
  && mkdir -p /data \
- && chown -R node:node /data
+ && chown -R node:node /data \
+ && TINI=$(command -v tini) \
+ && test -x "$TINI" \
+ && echo "tini 实际路径: $TINI" \
+ && ln -sf "$TINI" /usr/local/bin/tini
 VOLUME ["/data"]
 
 # 生产依赖单独一层：改业务代码时这一层命中缓存，不用重装依赖
@@ -83,5 +92,7 @@ EXPOSE 8787
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "require('http').get('http://127.0.0.1:'+(process.env.PORT||8787)+'/api/ping',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"
 
-ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["src/index.js"]
+# ★ 走 /usr/local/bin —— 上面构建期已实测 tini 真实落点并建了软链。
+#   硬编码 /sbin/tini 时容器以 126 退出（ENTRYPOINT 存在但不可执行）。
+ENTRYPOINT ["/usr/local/bin/tini", "--"]
+CMD ["node", "src/index.js"]
