@@ -1,0 +1,35 @@
+name: ExchangeBridge
+main: io.github.kokuustudio.exchange.ExchangeBridge
+version: ${project.version}
+api-version: '1.13'
+author: KokuuStudio
+description: Blessing Skin 积分兑换的 MC 端执行器（消费 Redis 队列并通过经济插件发放游戏内货币）
+website: https://github.com/KokuuStudio
+softdepend:
+  # 加载顺序保证：经济后端要先于本插件就位。
+  # Vault 是通用适配层，绝大多数经济后端都经它注册，列在最前。
+  # CMI 保留是因为老服仍在用（本站已不用，但改了会让那些服失去加载顺序保证）。
+  - Vault
+  - EssentialsX
+  - CMI
+
+# ⚠️⚠️ commands 段是**必须**的，之前漏了它导致命令全是死的。
+#    Bukkit 靠这里把命令注册进 CommandMap，再由 setExecutor() 挂上处理逻辑。
+#    少了这段 + 不 implements CommandExecutor = 输 /exbridge 只回 "Unknown command"。
+commands:
+  exbridge:
+    description: ExchangeBridge main command
+    usage: /exbridge status|reconnect|balance <player>|reload|reflow [scan|on|off]
+    aliases: [exb]
+    permission: exchangebridge.use
+
+permissions:
+  # status / balance are read-only diagnostics, available to everyone
+  exchangebridge.use:
+    description: 查看兑换状态与自己的余额
+    default: true
+  # reconnect / reload / coin / points / reflow rebuild the connection,
+  # reload config, or modify player assets — admin only
+  exchangebridge.admin:
+    description: 重连 Redis、重载配置、修改玩家资产、开关金币回流
+    default: op

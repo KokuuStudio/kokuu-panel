@@ -1,0 +1,35 @@
+# ── Maven ──
+target/
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+
+# ── IDE ──
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+
+# ── 日志与临时文件 ──
+*.log
+logs/
+*.tmp
+*.bak
+*.bak-*
+
+# ── ⚠️ 凭据绝不入库 ──
+# config.yml 里的 redis.password 是模板占位，真密码只写服务器上那一份。
+# 万一有人把填了密码的 config.yml 拷进来，靠这条挡住
+config.local.yml
+*.local.yml
+.env
+.env.*
+!.env.example
+
+# ── 系统垃圾 ──
+.DS_Store
+Thumbs.db
+desktop.ini
