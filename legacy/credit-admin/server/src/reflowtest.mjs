@@ -1,0 +1,225 @@
+/**
+ * 金币回流链路的冒烟测试。
+ *
+ * 用法：
+ *   node src/reflowtest.mjs http://127.0.0.1:8799 <ADMIN_TOKEN>
+ *
+ * ★ 为什么走 /reflow/simulate 而不是灌 Redis 队列：
+ *   本机没跑 Redis，队列那半边测不了。
+ *   simulate 直接调 ReflowConsumer.handle() —— 那是真正做决策的地方
+ *   （校验、幂等、身份解析、限额、记账、写明细）。
+ *   队列那半边只有 LPUSH/BRPOP 两行代码，靠人眼 review 即可，不必自动化。
+ *
+ * ★ 为什么必须测幂等：
+ *   玩家被扣了金币、事件又被重复投递 —— 这是**真实会发生的**
+ *   （Redis 主从切换、运维手动重推队列）。
+ *   重复入账等于凭空造币，而积分能换金币。
+ */
+import http from 'node:http';
+import crypto from 'node:crypto';
+
+const T = process.argv[3] || process.env.ADMIN_TOKEN || '';
+const BASE = process.argv[2] || 'http://127.0.0.1:8799';
+
+// 本机设了 HTTP_PROXY，undici 的 fetch 会走代理而代理拒绝连本机端口
+delete process.env.HTTP_PROXY;
+delete process.env.HTTPS_PROXY;
+delete process.env.http_proxy;
+delete process.env.https_proxy;
+
+/**
+ * ★ 为什么这里不直接 reject：
+ *   原来的写法是 `req.on('error', reject)`，于是一次
+ *   ECONNRESET / ETIMEDOUT 就会让顶层 await 抛出，
+ *   脚本以 triggerUncaughtException 终止 ——
+ *   **退出码一样是 1，但前面所有已通过的断言输出全丢了**，
+ *   CI 上只能看到一句 "Process completed with exit code 1"，
+ *   排查时得先猜是环境问题还是代码问题，白花一轮。
+ *   改成返回一个 code=0 的哨兵值：请求失败会被记成一条 ✗ 断言，
+ *   后续断言继续跑，输出里能直接看到「哪一步、什么原因」。
+ */
+function raw(method, path, body, token = T) {
+  return new Promise((resolve) => {
+    const payload = body === undefined ? null : Buffer.from(JSON.stringify(body));
+    const req = http.request({
+      host: '127.0.0.1', port: new URL(BASE).port, path: '/api' + path, method,
+      headers: {
+        ...(token ? { 'X-Admin-Token': token } : {}),
+        ...(payload ? { 'Content-Type': 'application/json', 'Content-Length': payload.length } : {}),
+      },
+      timeout: 10000,
+    }, (res) => {
+      let s = '';
+      res.on('data', (c) => { s += c; });
+      res.on('end', () => {
+        let j; try { j = JSON.parse(s); } catch { j = s || '<空>'; }
+        resolve({ code: res.statusCode, j });
+      });
+    });
+    req.on('error', (e) => resolve({ code: 0, j: { error: `请求失败：${e.message}` } }));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({ code: 0, j: { error: '请求超时（10s）—— 后端可能已崩溃或无响应' } });
+    });
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+let fails = 0;
+let passed = 0;
+const ok = (name, cond, extra = '') => {
+  if (cond) { passed++; console.log(`  ✓ ${name}`); }
+  else { fails++; console.log(`  ✗ ${name}${extra ? ' → ' + extra : ''}`); }
+};
+const sec = (s) => console.log(`\n── ${s} ──`);
+
+const U = crypto.randomUUID();
+const P = 'RF' + crypto.randomBytes(3).toString('hex');
+
+const r = await raw('GET', '/meta');
+const hasSkin = !!r.j.hasSkin;
+console.log(`后端：${r.j.label}`);
+if (hasSkin) console.log('注：skin 模式账户类断言按设计分流（账户由注册流程产生）');
+
+/* ── 0. 前置：把比例与回流上限设成确定值 ─────────────────── */
+sec('前置：设置配置');
+await raw('PUT', '/config', {
+  ratio: '1000', min_coin: '1000',
+  enabled: '1', daily_limit: '200', single_limit: '50',
+  reflow_enabled: '1', reflow_daily_limit: '100',
+});
+const rc = await raw('GET', '/config');
+ok('配置已写入', rc.j.config.ratio === '1000' && rc.j.config.reflow_enabled === '1',
+  JSON.stringify(rc.j.config));
+
+/* ── 1. 基础入账 ─────────────────────────────────────────── */
+sec('基础：扣 5000 金币 → 5 积分');
+const r1 = await raw('POST', '/reflow/simulate', { player: P, uuid: U, coin: 5000 });
+ok('返回 200', r1.code === 200, `code=${r1.code} ${JSON.stringify(r1.j)}`);
+ok('给 5 积分', r1.j.credit === 5, JSON.stringify(r1.j));
+ok('余额 = 5', r1.j.after === 5, `after=${r1.j.after}`);
+
+/* ── 2. 幂等：同一 event_id 重复投递 ──────────────────────── */
+sec('幂等：重复投递同一 eventId');
+const eid = r1.j.eventId;
+const r2 = await raw('POST', '/reflow/simulate',
+  { player: P, uuid: U, coin: 5000, eventId: eid });
+ok('标记为幂等回放', r2.j.idempotent === true, JSON.stringify(r2.j));
+ok('余额没有二次增加', r2.j.after === 5, `after=${r2.j.after}`);
+
+/* ── 3. uuid 优先：改名后仍命中同一账户 ──────────────────── */
+sec('身份：改名后同 uuid 仍入同一账户');
+const r3 = await raw('POST', '/reflow/simulate',
+  { player: P + 'Renamed', uuid: U, coin: 3000 });
+ok('改名后仍入账', r3.code === 200, JSON.stringify(r3.j));
+ok('余额累加到 8', r3.j.after === 8, `after=${r3.j.after}`);
+const uid = r1.j.uid;
+ok('uid 未变（同一账户）', r3.j.uid === uid, `${r1.j.uid} vs ${r3.j.uid}`);
+
+/* ── 4. 零头被抹掉：5500 金币 → 抽 5000 得 5 分 ────────────── */
+sec('换算：零头留在游戏里');
+const U4 = crypto.randomUUID();
+const r4 = await raw('POST', '/reflow/simulate',
+  { player: 'RFZero', uuid: U4, coin: 5500 });
+ok('5 积分（不是 5.5）', r4.j.credit === 5, `credit=${r4.j.credit}`);
+
+/* ── 5. 非法输入一律拒绝 ─────────────────────────────────── */
+sec('安全：非法输入');
+const bad = [
+  ['credit 为 0', { player: 'X1', uuid: crypto.randomUUID(), coin: 500 }, '不足 1 积分'],
+  ['金币数为 0', { player: 'X2', uuid: crypto.randomUUID(), coin: 0 }, '必须为正整数'],
+  ['金币数为负', { player: 'X3', uuid: crypto.randomUUID(), coin: -5000 }, '必须为正整数'],
+  ['玩家名带控制字符', { player: 'Bad\x00Name', uuid: crypto.randomUUID(), coin: 5000 }, ''],
+  ['uuid 格式非法', { player: 'X4', uuid: 'not-a-uuid', coin: 5000 }, ''],
+  ['uuid 全 0', { player: 'X5', uuid: '00000000-0000-0000-0000-000000000000', coin: 5000 }, ''],
+  ['缺少玩家标识', { coin: 5000 }, ''],
+];
+for (const [name, body, expectSub] of bad) {
+  const rr = await raw('POST', '/reflow/simulate', body);
+  const passedCheck = rr.code === 400
+    && (!expectSub || String(rr.j.error || rr.j.reason || '').includes(expectSub));
+  ok(name + ' 被拒', passedCheck, `code=${rr.code} ${JSON.stringify(rr.j)}`);
+}
+
+/* ── 6. 每日回流上限 ─────────────────────────────────────── */
+sec('限额：每日回流上限（设 100）');
+const U6 = crypto.randomUUID();
+// 每次 60 积分 = 60000 金币。第二笔会到 120 > 100，必须被拒。
+const a6 = await raw('POST', '/reflow/simulate',
+  { player: 'RFLimit', uuid: U6, coin: 60000 });
+ok('第一笔 60 积分入账', a6.code === 200 && a6.j.credit === 60,
+  `code=${a6.code} ${JSON.stringify(a6.j)}`);
+const b6 = await raw('POST', '/reflow/simulate',
+  { player: 'RFLimit', uuid: U6, coin: 60000 });
+ok('第二笔被拒（超上限）', b6.code === 400 && /上限/.test(b6.j.reason || ''),
+  `code=${b6.code} ${JSON.stringify(b6.j)}`);
+const c6 = await raw('POST', '/reflow/simulate',
+  { player: 'RFLimit', uuid: U6, coin: 30000 });
+ok('小笔仍可入账（30 分，累计 90 ≤ 100）', c6.code === 200 && c6.j.after === 90,
+  `code=${c6.code} ${JSON.stringify(c6.j)}`);
+
+/* ── 7. 比例漂移检测 ─────────────────────────────────────── */
+sec('漂移：插件上报的比例与中间件不符');
+const before = await raw('GET', '/reflow/status');
+const U7 = crypto.randomUUID();
+// 扣 5000 金币却上报 50 积分（相当于插件侧比例 100:1），
+// 中间件比例是 1000:1，应该给出告警但**仍然入账** ——
+// 因为玩家的金币在插件那侧已经扣掉了，不入账等于让玩家白亏。
+const r7 = await raw('POST', '/reflow/simulate',
+  { player: 'RFDrift', uuid: U7, coin: 5000, credit: 50, eventId: `rf:drift:${Date.now()}` });
+ok('漂移时仍然入账（玩家金币已扣，不能吞）', r7.code === 200 && r7.j.credit === 50,
+  `code=${r7.code} ${JSON.stringify(r7.j)}`);
+const after = await raw('GET', '/reflow/status');
+ok('回流状态端点可用', after.code === 200 && typeof after.j.consumed === 'number',
+  JSON.stringify(after.j));
+ok('统计里已消费事件数 > 0', after.j.consumed > before.j.consumed,
+  `${before.j.consumed} → ${after.j.consumed}`);
+ok('漂移被计数', after.j.drift > before.j.drift,
+  `${before.j.drift} → ${after.j.drift}`);
+ok('统计里已入账笔数 > 0', after.j.credited > 0, `credited=${after.j.credited}`);
+ok('有被拒绝的记录', after.j.rejected > 0, `rejected=${after.j.rejected}`);
+
+/* ── 7b. 漂移容忍区间内不告警 ─────────────────────────────── */
+sec('漂移：小幅偏差不算漂移');
+const b7 = await raw('GET', '/reflow/status');
+// 5000 金币 / 1000 = 5 积分；上报 5 正好一致，6 属于 20% 偏差（阈值 50%）→ 不算漂移
+await raw('POST', '/reflow/simulate',
+  { player: 'RFNear', uuid: crypto.randomUUID(), coin: 5000, credit: 6 });
+const a7 = await raw('GET', '/reflow/status');
+ok('20% 偏差未计入漂移', a7.j.drift === b7.j.drift,
+  `${b7.j.drift} → ${a7.j.drift}`);
+
+/* ── 8. 鉴权 ─────────────────────────────────────────────── */
+sec('鉴权：未带口令');
+const r8 = await raw('POST', '/reflow/simulate',
+  { player: 'RFNoAuth', uuid: crypto.randomUUID(), coin: 5000 }, '');
+ok('无口令被拒', r8.code === 401 || r8.code === 403, `code=${r8.code}`);
+
+/* ── 9. 开关关闭后不处理新事件 ───────────────────────────── */
+sec('开关：reflow_enabled=0 时不处理');
+await raw('PUT', '/config', { reflow_enabled: '0' });
+const st = await raw('GET', '/reflow/status');
+ok('状态里显示开关已关', st.j.config?.enabled === false, JSON.stringify(st.j.config));
+await raw('PUT', '/config', { reflow_enabled: '1' });
+
+/* ── 10. 配置校验 ────────────────────────────────────────── */
+sec('配置：非法值被拒');
+const badCfg = [
+  ['reflow_enabled 非 0/1', { reflow_enabled: '2' }],
+  ['reflow_daily_limit 为负', { reflow_daily_limit: '-1' }],
+];
+for (const [name, patch] of badCfg) {
+  const rr = await raw('PUT', '/config', patch);
+  ok(name + ' 被拒', rr.code === 400, `code=${rr.code} ${JSON.stringify(rr.j)}`);
+}
+const r10 = await raw('GET', '/config');
+ok('非法写入没有污染配置',
+  r10.j.config.reflow_enabled === '1' && r10.j.config.reflow_daily_limit === '100',
+  JSON.stringify(r10.j.config));
+
+/* ── 汇总 ────────────────────────────────────────────────── */
+console.log(`\n${'═'.repeat(46)}`);
+console.log(`  通过 ${passed}，失败 ${fails}`);
+console.log('═'.repeat(46));
+process.exit(fails ? 1 : 0);

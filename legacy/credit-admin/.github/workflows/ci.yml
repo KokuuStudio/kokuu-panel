@@ -1,0 +1,397 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+# ★ 为什么需要 artifact：
+#   actions logs 接口要仓库 admin 权限才拉得到，
+#   只有 maintainer 的 token 能看到 CI 输出 —— 于是「CI 红了」这件事
+#   对没有 admin 权限的协作者就是**黑盒**，只能看着红色猜。
+#   把诊断信息（后端日志、失败断言、构建日志）作为 artifact 上传后，
+#   任何有仓库读权限的人都能下载排查。
+permissions:
+  contents: read
+
+jobs:
+  # ── 接口测试（standalone）───────────────────────────────
+  # 不依赖 MySQL：独立模式的账本是 JSONL，起一个 node 进程就够。
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: 安装依赖
+        working-directory: server
+        run: npm ci
+
+      - name: 起后端（standalone）
+        working-directory: server
+        env:
+          BACKEND: standalone
+          DATA_DIR: ./data-test
+          PORT: '8799'
+          HOST: 127.0.0.1
+          SERVE_WEB: '0'
+          ADMIN_TOKEN: testtoken123
+          # Redis 不在 CI 里起：接口测试只碰 HTTP 层，
+          # 回流走 /reflow/simulate 直接调 handle()，绕开了队列。
+          REDIS_HOST: 127.0.0.1
+          REDIS_PORT: 6379
+        run: |
+          # ★ set -o pipefail 必须有：下面用 `| tee` 保存输出，
+          #   没有它时管道的退出码取自 tee（永远 0），
+          #   测试挂了这一 step 也会显示绿色 —— 假绿比红更糟。
+          set -o pipefail
+
+          # 日志落文件而不是只进 stdout：后端是后台进程，
+          # 失败时 stdout 早就被后续输出冲掉了，只留文件才能 dump。
+          node src/index.js > ../ci-server.log 2>&1 &
+          echo $! > ../ci-server.pid
+
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8799/api/ping >/dev/null; then break; fi
+            # 进程死了就别再空等 30 秒 —— 直接把日志打出来
+            if ! kill -0 "$(cat ../ci-server.pid)" 2>/dev/null; then
+              echo "::error::后端进程已退出，日志如下："
+              cat ../ci-server.log
+              exit 1
+            fi
+            sleep 1
+          done
+
+          if ! curl -sf http://127.0.0.1:8799/api/ping >/dev/null; then
+            echo "::error::后端 30 秒内没起来，日志如下："
+            cat ../ci-server.log
+            exit 1
+          fi
+          curl -s http://127.0.0.1:8799/api/ping; echo
+
+          node src/apitest.mjs http://127.0.0.1:8799 testtoken123 2>&1 | tee ../api-test.out
+
+      - name: 接口测试失败项（annotation）
+        if: failure()
+        working-directory: server
+        run: |
+          if grep -q '✗' ../api-test.out; then
+            grep '✗' ../api-test.out | head -20 | while IFS= read -r line; do
+              echo "::error title=接口测试::${line}"
+            done
+          else
+            echo "::error title=接口测试::无失败断言但退出码非 0 —— 测试脚本自身异常。输出尾部："
+            tail -20 ../api-test.out | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+          fi
+
+      # ★ 两个测试拆成两步：合在一起时只能看到「起后端」红了，
+      #   不知道是 apitest 挂了还是 reflowtest 挂了。
+      #   拆开后结论直接体现在 step 名字上。
+      #
+      # ★ 把失败断言变成 GitHub annotation：
+      #   actions logs 接口要仓库 admin 权限，没有权限的人看到
+      #   「CI 红了」却**读不到任何失败原因** —— 只能反复本地猜环境差异。
+      #   而 annotation 走 check-runs 的公开接口，任何有读权限的人
+      #   （包括 CI 排查用的自动化）都能直接拿到失败项原文。
+      - name: 回流测试
+        working-directory: server
+        run: |
+          set -o pipefail
+          node src/reflowtest.mjs http://127.0.0.1:8799 testtoken123 2>&1 | tee ../reflow-test.out
+          # ★ 把完整输出写进 run summary —— artifact 要下载才能看，
+          #   而 summary 直接显示在 GitHub 网页上，打开就能读。
+          {
+            echo '## 回流测试输出'
+            echo '```'
+            cat ../reflow-test.out
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 回流测试失败项（annotation）
+        if: failure()
+        working-directory: server
+        run: |
+          # 只取失败行：全量输出进 annotation 会超长度上限被截断，
+          # 而真正有价值的就是那几行 ✗。
+          if grep -q '✗' ../reflow-test.out; then
+            echo "::group::回流测试失败项"
+            grep '✗' ../reflow-test.out | head -20 | while IFS= read -r line; do
+              echo "::error title=回流测试::${line}"
+            done
+            echo "::endgroup::"
+          else
+            # 没有 ✗ 却失败 = 测试脚本自己崩了（异常抛出/进程被杀），
+            # 这时输出尾部才是根因所在。
+            echo "::error title=回流测试::无失败断言但退出码非 0 —— 测试脚本自身异常。输出尾部："
+            tail -20 ../reflow-test.out | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+          fi
+
+      - name: 上传诊断信息（失败排查用）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-diagnostics
+          path: |
+            ci-server.log
+            reflow-test.out
+            server/data-test/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ── 插件编译（Java 8 字节码）───────────────────────────
+  # ★ 单独检查字节码版本：
+  #   1.12.2 跑在 Java 8 上，编译成 17 的字节码会让老服务端直接
+  #   "UnsupportedClassVersionError"，而且只在 1.12.2 上炸 ——
+  #   开发用的是新 JDK，不检查就会漏过去。
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      # ★ 插件是**独立仓库**（KokuuStudio/exchange-bridge），不是本仓库的子目录。
+      #   之前写成 actions/checkout + path: exchange-bridge 会把本仓库
+      #   再拉一遍到子目录里 —— 那里根本没有 Java 源码，mvn 会直接失败。
+      - name: 拉取插件仓库
+        uses: actions/checkout@v4
+        with:
+          repository: KokuuStudio/exchange-bridge
+          path: exchange-bridge
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: exchange-bridge/pom.xml
+
+      - name: 编译并打包
+        working-directory: exchange-bridge
+        run: mvn -B -q package -DskipTests
+
+      - name: 校验字节码为 Java 8 可加载（major <= 52）
+        working-directory: exchange-bridge
+        run: |
+          # ★ 这个检查第一版是错的，实测才发现：它 `find ... | head -1`
+          #   随机抽一个 class 出来看 major，等于靠运气。
+          #   shade 把 jedis / gson / slf4j 全打进 jar，实测 970 个 class 里混着：
+          #     major 51 → 217 个（gson 等，Java 7 编译的，Java 8 能加载，没问题）
+          #     major 52 → 752 个
+          #     major 53 →   1 个（META-INF/versions/9/module-info.class）
+          #   本地恰好抽到 52 → 绿；CI 上抽到 53 → 红。同样的代码，结论相反。
+          #
+          # ★ 为什么要排除 META-INF/：
+          #   那个唯一的 53 是多版本 JAR 的模块声明（MR-JAR）。
+          #   Java 8 根本不读 versions/ 目录，永远不会加载它 ——
+          #   把它算进失败是纯误报。
+          #
+          # 正确判据：**Java 8 真会加载到的 class，major 都必须 <= 52**。
+          JAR=$(ls target/*.jar | grep -v sources | grep -v original | head -1)
+          echo "检查 $JAR"
+          rm -rf target/classes-check
+          unzip -o -q "$JAR" -d target/classes-check
+
+          python3 - <<'PY'
+          import pathlib, sys
+          root = pathlib.Path('target/classes-check')
+          dist, bad, n = {}, [], 0
+          for f in root.rglob('*.class'):
+              # MR-JAR 的 versions/ 目录 Java 8 不会加载，豁免
+              if 'META-INF' in f.parts:
+                  continue
+              n += 1
+              major = int.from_bytes(f.read_bytes()[6:8], 'big')  # 大端 u2
+              dist[major] = dist.get(major, 0) + 1
+              if major > 52:
+                  bad.append((major, str(f)))
+          print(f'共检查 {n} 个 class，major 分布 {dict(sorted(dist.items()))}')
+          if bad:
+              print('::error::以下 class 的 major > 52（Java 9+），'
+                    '1.12.2 的 Java 8 加载会 UnsupportedClassVersionError')
+              for major, path in bad[:20]:
+                  print(f'  major {major}  {path}')
+              sys.exit(1)
+          print('全部 Java 8 会加载的 class 均为 major <= 52 —— 通过')
+          PY
+
+  # ── 镜像构建 ───────────────────────────────────────────
+  # ★ 有了这一步，「Dockerfile 能不能构建」在 PR 上就能验证，
+  #   而不是等部署到服务器才发现 COPY 路径写错。
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 构建镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: kokuu-credit-admin:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ★ 构建失败时把完整构建日志留下来。
+      #   build-push-action 失败只给一行 summary，真正的原因（哪个 COPY
+      #   的源不存在、第几行语法错）在日志里 —— 没有它就只能反复重跑试。
+      #   buildx 的实际输出在 /tmp/buildx.log，要先 --debug 才会写。
+      - name: 收集构建日志
+        if: failure()
+        run: |
+          docker buildx build --progress=plain -t kokuu-credit-admin:ci . \
+            > build-plain.log 2>&1 || true
+          tail -100 build-plain.log
+
+      # ★ 同样把根因做成 annotation：
+      #   build-push-action 默认只报 "exit code: 1"，
+      #   而 npm 装依赖失败时真正有用的是最后那几行
+      #   （ENOENT / 404 / unsupported platform）。
+      #   只取错误行，避免整份日志把 annotation 撑爆。
+      - name: 构建失败根因（annotation）
+        if: failure()
+        run: |
+          if [ -s build-plain.log ]; then
+            grep -nE 'ERROR|error|ERR!|not found|404|ENOENT|Unsupported|failed' \
+              build-plain.log | tail -25 | while IFS= read -r line; do
+              echo "::error title=镜像构建::${line}"
+            done
+          else
+            echo "::error title=镜像构建::构建失败且未产出 build-plain.log（见 buildx action 输出）"
+          fi
+
+      - name: 上传构建日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-build-log
+          path: build-plain.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # ★ 构建期自检：把「镜像根本跑不起来」这类问题挡在构建阶段。
+      #   退出码 126（ENTRYPOINT 存在但不可执行）这类问题，
+      #   从「容器 Up 但接口无响应」里分辨出来极难 ——
+      #   容器起一下就退，日志是空的，看起来像随机故障。
+      #   在镜像内直接验证入口链路，问题会立刻变成一行明确的报错。
+      - name: 自检：镜像入口链路可用
+        run: |
+          set -e
+          echo "--- ENTRYPOINT / CMD ---"
+          docker inspect -f 'entrypoint={{json .Config.Entrypoint}} cmd={{json .Config.Cmd}} user={{.Config.User}}' \
+            kokuu-credit-admin:ci
+          echo "--- 入口文件与 tini ---"
+          docker run --rm --entrypoint sh kokuu-credit-admin:ci -c '
+            set -e
+            command -v tini
+            test -x /usr/local/bin/tini || { echo "tini 不可执行"; exit 1; }
+            test -f /app/server/src/index.js || { echo "缺 index.js"; exit 1; }
+            echo "node_modules 顶层:"; ls /app/server/node_modules | head -5
+            echo "前端产物:"; ls /app/web/dist
+            echo "当前用户: $(id)"
+            echo "数据目录可写: $(touch /data/.probe && echo YES || echo NO)"
+          '
+
+      - name: 冒烟：容器能起来且 /api/ping 有响应
+        run: |
+          # ★ 显式建一个属主匹配的 named volume，而不是让 docker run
+          #   自动挂匿名卷。原因是 VOLUME 声明的 /data 在 run 时会被
+          #   匿名卷**遮蔽**，镜像里 chown 过的属主等于白做 ——
+          #   而 node 用户（uid 1000）在空卷里没有写权限，
+          #   mkdir 抛 EACCES，进程启动即崩，/api/ping 永远无响应。
+          #   这也是 INSTALL.md 里要求首次创建卷时指定属主的原因。
+          docker volume create kk-data
+          docker run --rm -v kk-data:/data alpine:3 \
+            chown 1000:1000 /data
+          docker volume rm kk-data
+          docker volume create kk-data
+
+          docker run -d --name kk -p 8787:8787 \
+            -v kk-data:/data \
+            -e BACKEND=standalone -e ADMIN_TOKEN=ci-token \
+            -e DATA_DIR=/data -e SERVE_WEB=1 kokuu-credit-admin:ci
+
+          # 30 秒不够反映真实情况：Redis 探测 + 静态资源加载都要时间，
+          # 但也不能太长 —— 失败时要尽快拿到日志。
+          ok=
+          for i in $(seq 1 45); do
+            if curl -sf http://127.0.0.1:8787/api/ping >/dev/null; then ok=1; break; fi
+            # 进程退出就别空等了，直接把**退出码与 OOM 状态**一并打出来。
+            # ★ 退出码是关键线索：137 = SIGKILL(OOM)，
+            #   1 = 进程自己报错退出，125/126 = docker 层面的问题。
+            #   只报「容器已退出」的话，这三种情况看起来一模一样。
+            if ! docker inspect -f '{{.State.Running}}' kk 2>/dev/null | grep -q true; then
+              code=$(docker inspect -f '{{.State.ExitCode}}' kk 2>/dev/null || echo '?')
+              oom=$(docker inspect -f '{{.State.OOMKilled}}' kk 2>/dev/null || echo '?')
+              echo "::error title=容器退出::退出码=$code OOMKilled=$oom"
+              echo "--- docker logs ---"
+              docker logs kk 2>&1 | tail -30
+              echo "--- 镜像内实际文件（排查 COPY 是否到位）---"
+              docker run --rm --entrypoint sh kokuu-credit-admin:ci -c \
+                'ls -la /app/server/src/index.js /app/web/dist 2>&1 | head -12; echo "--- id ---"; id' 2>&1 | head -20
+              docker rm -f kk 2>/dev/null || true
+              docker volume rm kk-data 2>/dev/null || true
+              exit 1
+            fi
+            sleep 1
+          done
+          if [ -z "$ok" ]; then
+            echo "::error::容器起来但 /api/ping 无响应，日志如下："
+            docker logs kk 2>&1 | tail -30
+            # 连静态资源都取不到时，多半是 SERVE_WEB 的产物路径不对
+            docker exec kk ls -la /app/web/dist 2>&1 | head -5 || true
+            docker rm -f kk 2>/dev/null || true
+            docker volume rm kk-data 2>/dev/null || true
+            exit 1
+          fi
+          curl -s http://127.0.0.1:8787/api/ping
+          echo
+          # 顺带确认前端产物真的伺服出去了 —— 只测 /api/ping 会漏掉
+          # 「接口正常但页面 404」这类问题，而那恰好是用户最先遇到的。
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/)
+          echo "首页 HTTP $code"
+          if [ "$code" != "200" ]; then
+            echo "::error::首页返回 $code，SERVE_WEB 静态伺服可能有问题"
+            docker rm -f kk 2>/dev/null || true
+            docker volume rm kk-data 2>/dev/null || true
+            exit 1
+          fi
+          docker logs kk 2>&1 | tail -20
+          docker rm -f kk
+          docker volume rm kk-data
+
+  # ── compose 文件语法 ───────────────────────────────────
+  compose-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 两份 compose 都要能解析
+        run: |
+          # ★ 两份 compose 都声明了 env_file: .env，而 .env 在 .gitignore 里
+          #   （它含 ADMIN_TOKEN 与数据库口令，绝不能提交）。
+          #   CI 里没有 .env，`docker compose config` 会直接失败。
+          #   这里造一份临时的，只为让语法能被解析。
+          cp .env.example .env
+
+          # 独立模式：自带 mysql + redis
+          docker compose -f docker-compose.yml config -q
+          # 皮肤站模式：必须**没有** mysql / redis 服务（连宿主机）
+          docker compose -f docker-compose.skin.yml config -q
+
+          # 皮肤站那份里若混进了 mysql/redis，说明两份文件的边界又糊了 ——
+          # 那会导致「皮肤站模式下误起第二个 MySQL，连上但全是空表」。
+          if docker compose -f docker-compose.skin.yml config --services \
+             | grep -qxE 'mysql|redis'; then
+            echo "::error::docker-compose.skin.yml 不该包含 mysql/redis 服务（会与皮肤站的库冲突）"
+            exit 1
+          fi
+          echo "两份 compose 语法 OK，且皮肤站那份不含 mysql/redis"

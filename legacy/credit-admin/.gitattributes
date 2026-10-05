@@ -1,0 +1,22 @@
+# 统一行尾：仓库内存 LF，检出时按平台自动转换。
+# 不加这条，Windows 的 CRLF 会让每个文件都显示为已修改，
+# 真正的改动被噪音淹没（判断真实差异要用 diff -q <(tr -d '\r' < a) <(tr -d '\r' < b)）。
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jar binary
+
+# 显式声明源码为文本：git 对含 NUL 的文件会走二进制启发式，
+# 导致 diff/blame 显示为 Bin。这里明确声明，防止再次发生。
+*.js text eol=lf
+*.mjs text eol=lf
+*.java text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.vue text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+*.xml text eol=lf
+Dockerfile text eol=lf

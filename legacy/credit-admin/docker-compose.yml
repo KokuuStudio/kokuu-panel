@@ -1,0 +1,128 @@
+# ══════════════════════════════════════════════════════════════
+#  kokuu-credit-admin —— 独立模式（自带 MySQL + Redis）
+# ══════════════════════════════════════════════════════════════
+#
+#  开箱即用，不依赖皮肤站、不依赖外部数据库：
+#
+#     cp .env.example .env     改 ADMIN_TOKEN
+#     docker compose up -d
+#     # 打开 http://127.0.0.1:8787
+#
+#  ── 连已有皮肤站请改用另一个文件 ──────────────────────────
+#     docker compose -f docker-compose.skin.yml up -d
+#
+#  ★ 为什么不把两种模式塞进一份文件、用 profile 切换：
+#     app 依赖 mysql/redis，而「带 profile 的服务会被依赖方自动拉起」
+#     这条规则意味着在皮肤站模式下 mysql 仍可能被起起来 ——
+#     于是出现两个 MySQL，谁也看不见谁的数据，症状是「连上了但全是空表」。
+#     两份独立文件没有这个歧义：皮肤站那份里根本没有 mysql 这个服务。
+# ══════════════════════════════════════════════════════════════
+
+name: kokuu-credit-admin
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: kokuu-credit-admin:1.0.0
+    restart: unless-stopped
+    env_file:
+      # ★ required: false —— 刚 clone 下来还没 cp .env.example .env 时，
+      #   compose 会因为找不到 env_file 直接报 "no such file"，
+      #   报的还是行号，用户根本看不出是缺 .env。
+      #   required: false 让它降级成"只用下面的 environment"，
+      #   报错就变成 ADMIN_TOKEN 没设这种能看懂的信息。
+      - path: .env
+        required: false
+
+    environment:
+      BACKEND: standalone
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_DATABASE: ${DB_DATABASE:-kokuu}
+      DB_USERNAME: ${DB_USERNAME:-kokuu}
+      DB_PASSWORD: ${DB_PASSWORD:-kokuu_app_pw}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_DB: ${REDIS_DB:-0}
+      # ★ 队列键名必须与 MC 插件 config.yml 的 queue.* 完全一致
+      REDIS_ASSET_KEY: ${REDIS_ASSET_KEY:-bs:asset:cmd}
+      REDIS_EVENT_KEY: ${REDIS_EVENT_KEY:-bs:asset:event}
+      DATA_DIR: /data
+      HOST: 0.0.0.0
+      PORT: "8787"
+      SERVE_WEB: "1"
+    ports:
+      # 默认只绑 127.0.0.1 —— 前置 nginx / Caddy 做 TLS。
+      # 要直接对外改成 "8787:8787"，但那样口令与账本数据都是明文传输。
+      - "${BIND_ADDR:-127.0.0.1}:${BIND_PORT:-8787}:8787"
+    volumes:
+      # 账本与配置。独立模式下这是**唯一**需要备份的业务数据卷。
+      - kokuu-data:/data
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [kokuu]
+
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      # 与皮肤站的 utf8mb4_general_ci 对齐。
+      # 排序规则不一致时 nickname 的比较结果会变，连带影响
+      # bridge_identity 的 uid 匹配 —— 表现为「明明绑过却查不到」。
+      - --collation-server=utf8mb4_general_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-kokuu_root_pw}
+      MYSQL_DATABASE: ${DB_DATABASE:-kokuu}
+      MYSQL_USER: ${DB_USERNAME:-kokuu}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-kokuu_app_pw}
+    volumes:
+      - kokuu-mysql:/var/lib/mysql
+    healthcheck:
+      # 用 mysqladmin ping 而不是 SELECT 1：初始化阶段会先建临时库，
+      # 此时已能应答但目标库还没建好，app 提前启动会连不上。
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-kokuu_root_pw}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    networks: [kokuu]
+    # 不对外暴露端口：只有 app 需要访问它。
+    # 要用客户端进去查数据：docker compose exec mysql mysql -ukokuu -p…
+    # ⚠️ 把这个端口放出去等于把积分账本裸露在公网上，不要做。
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      # 队列里的消息不能丢：回流事件在队列里等着被消费，
+      # 丢了就等于「玩家的金币已经扣了、积分却没入账」。
+      # AOF everysec 是「最坏丢 1 秒」的折中。
+      - --save
+      - "60 1000"
+    volumes:
+      - kokuu-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    networks: [kokuu]
+
+networks:
+  kokuu:
+    driver: bridge
+
+volumes:
+  kokuu-data:
+  kokuu-mysql:
+  kokuu-redis:

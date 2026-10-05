@@ -1,0 +1,17 @@
+node_modules/
+dist/
+server/.env
+ops/token.txt
+.env
+.env.remote
+*.log
+.DS_Store
+
+# Docker 本地状态
+.shots/
+data/
+data-test/
+
+# vite 构建期临时文件
+web/vite.config.js.timestamp-*.mjs
+web/vite.config.js.timestamp-*
