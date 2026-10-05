@@ -1,5 +1,10 @@
 # KokuuPanel
 
+> **仓库沿革（2026-10-05）**：两个前身仓库已作为 subtree 并入本仓库的 `legacy/` 目录——
+> [`legacy/credit-admin/`](legacy/credit-admin/)（经济桥接中间件 + 管理台）与
+> [`legacy/exchange-bridge/`](legacy/exchange-bridge/)（MC 服务端执行器插件）。
+> 原独立仓库已归档，完整提交历史保留在 subtree merge 提交中。
+
 综合性 Minecraft Java 版服务器管理平台。
 
 从 [kokuu-credit-admin](https://github.com/KokuuStudio/kokuu-credit-admin)（只管经济）  
